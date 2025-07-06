@@ -1,0 +1,142 @@
+[build-system]
+requires = [ "setuptools", "setuptools-scm" ]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lauren"
+dynamic = [ "version" ]
+description = "Large AI Utility for Retrieval and Embedding with Neural Networks"
+readme = "README.rst"
+requires-python = ">=3.12"
+license.file = "LICENSE"
+authors = [
+  { name = "Akshay Mestry", email = "xa@mes3.dev" },
+]
+keywords = [ "python", "pytorch" ]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pydantic",
+    "openai",
+    "chromadb",
+    "faiss-cpu",
+    "numpy",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "google-search-results",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-grpc",
+]
+
+[project.scripts]
+lauren = "lauren.cli:main"
+
+[project.entry-points."lauren.plugins"]
+
+[project.urls]
+Code = "https://github.com/xames3/lauren"
+Download = "https://pypi.org/project/lauren/"
+Homepage = "https://github.com/xames3/lauren/"
+"Issue tracker" = "https://github.com/xames3/lauren/issues"
+
+[tool.setuptools]
+packages = [ "lauren" ]
+
+[tool.setuptools.dynamic]
+version = { attr = "lauren.version" }
+
+[tool.black]
+line-length = 80
+
+[tool.isort]
+profile = "black"
+line_length = 80
+force_single_line = true
+force_sort_within_sections = false
+
+[tool.mypy]
+files = [ "lauren/*.py" ]
+show_error_codes = true
+show_error_context = true
+pretty = true
+strict = true
+show_column_numbers = true
+warn_unreachable = true
+warn_unused_ignores = true
+warn_unused_configs = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true
+disable_error_code = [
+  "attr-defined",
+  "call-overload",
+  "index",
+  "no-any-return",
+  "operator",
+  "override",
+  "union-attr",
+  "unreachable",
+]
+
+[[tool.mypy.overrides]]
+module = [
+  "lauren.*",
+]
+disable_error_code = [ "assignment", "method-assign", "name-defined" ]
+
+[tool.pytest.ini_options]
+addopts = "--html=reports/reports.html --self-contained-html --cov=lauren --cov-report=html"
+testpaths = [ "tests" ]
+
+[tool.coverage.run]
+branch = true
+source = [ "lauren" ]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:"
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.tox]
+requires = [ "tox>=4" ]
+envlist = [ "py313" ]
+package = "editable"
+
+[tool.tox.env_run_base]
+description = "Linting code and running static type checking on {base_python}"
+deps = [
+  "black",
+  "flake8",
+  "isort",
+  "mypy",
+  "mypy-extensions",
+  "numpy",
+  "pytest",
+  "pytest-cov",
+  "pytest-html",
+  "coverage[toml]",
+  "torch",
+  "typing_extensions",
+]
+commands = [
+  [ "isort", "--sl", {replace = "posargs", default = ["lauren/"], extend = true} ],
+  [ "black", "-q", {replace = "posargs", default = ["lauren/"], extend = true}, "--line-length", "79" ],
+  [ "mypy", {replace = "posargs", default = ["lauren/"], extend = true} ],
+  [ "flake8", {replace = "posargs", default = ["lauren/"], extend = true}, "--per-file-ignores", "__init__.py:E402,F401,F403,F405", "--ignore", "E203,E704,W503" ],
+  [ "pytest", "-v", "-rA", "--tb=short" ]
+]
