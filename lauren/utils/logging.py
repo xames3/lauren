@@ -4,7 +4,7 @@ Logging
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Sunday, July 06 2025
+Last updated on: Sunday, July 07 2025
 
 This module provides logging utilities and configuration helpers for the
 L.A.U.R.E.N framework. The logging system aims to be production-ready,
@@ -86,7 +86,7 @@ class JSONFormatter(logging.Formatter):
         :param record: The log record to format.
         :return: JSON-formatted log message.
         """
-        log_data = {
+        payload = {
             "timestamp": self.formatTime(record),
             "level": record.levelname,
             "logger": record.name,
@@ -96,12 +96,12 @@ class JSONFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = self.formatException(record.exc_info)
         if self.extras:
             for key, value in record.__dict__.items():
-                if key not in log_data and not key.startswith("_"):
-                    log_data[key] = value
-        return json.dumps(log_data, default=str)
+                if key not in payload and not key.startswith("_"):
+                    payload[key] = value
+        return json.dumps(payload, default=str)
 
 
 class LaurenFormatter(logging.Formatter):
@@ -189,24 +189,23 @@ class LaurenFormatter(logging.Formatter):
         :param record: The log record to format.
         :return: Formatted log message with extra fields.
         """
-        record_copy = logging.makeLogRecord(record.__dict__)
-        extra_fields = {}
+        clone = logging.makeLogRecord(record.__dict__)
+        extras = {}
         for key, value in record.__dict__.items():
             if key not in self.LOG_RECORD_ATTRS and not key.startswith("_"):
-                extra_fields[key] = value
-        if extra_fields or self.allow_empty_extra:
-            if extra_fields:
-                formatted_extra_fields = []
-                for key, value in sorted(extra_fields.items()):
-                    formatted_field = self.extra.format(key=key, value=value)
-                    formatted_extra_fields.append(formatted_field)
-                extra = self.extra_separator.join(formatted_extra_fields) + " "
+                extras[key] = value
+        if extras or self.allow_empty_extra:
+            if extras:
+                entries = []
+                for key, value in sorted(extras.items()):
+                    entries.append(self.extra.format(key=key, value=value))
+                extra = self.extra_separator.join(entries) + " "
             else:
                 extra = ""
-            record_copy.extra = extra
+            clone.extra = extra
         else:
-            record_copy.extra = ""
-        return super().format(record_copy)
+            clone.extra = ""
+        return super().format(clone)
 
 
 class ColouredFormatter(LaurenFormatter):
@@ -247,7 +246,7 @@ class ColouredFormatter(LaurenFormatter):
         "RESET": "\x1b[0m",
     }
 
-    def generate_qualname(self, record: logging.LogRecord) -> str:
+    def make_qualname(self, record: logging.LogRecord) -> str:
         """Generate fully qualified function/method/class name.
 
         This method constructs a complete path to the function or method
@@ -259,9 +258,9 @@ class ColouredFormatter(LaurenFormatter):
         """
         parts = []
         if hasattr(record, "pathname") and record.pathname:
-            module_path = self.isolate_module(record.pathname)
-            if module_path:
-                parts.append(module_path)
+            namespace = self.find_module(record.pathname)
+            if namespace:
+                parts.append(namespace)
         elif hasattr(record, "module") and record.module:
             parts.append(record.module)
         if hasattr(record, "funcName") and record.funcName:
@@ -274,9 +273,9 @@ class ColouredFormatter(LaurenFormatter):
                     path = Path(record.pathname)
                     if path.exists():
                         try:
-                            with open(path, encoding="utf-8") as code_file:
-                                source_code = code_file.read()
-                            tree = ast.parse(source_code)
+                            with open(path, encoding="utf-8") as f:
+                                code = f.read()
+                            tree = ast.parse(code)
                             line = record.lineno
                             klass = self.class_at_line(tree, line, func)
                             if klass:
@@ -295,11 +294,11 @@ class ColouredFormatter(LaurenFormatter):
             else:
                 parts.append(func)
                 parts.append(func)
-        qualified_name = ".".join(parts) if parts else "unknown"
-        return qualified_name
+        qualname = ".".join(parts) if parts else "unknown"
+        return qualname
 
-    def isolate_module(self, pathname: str) -> str | None:
-        """Extract the proper module path from a file pathname.
+    def find_module(self, pathname: str) -> str | None:
+        """Find the proper module path from a file pathname.
 
         This method converts a file path into a proper module path by
         detecting the package root dynamically. It works for any
@@ -313,58 +312,50 @@ class ColouredFormatter(LaurenFormatter):
             import sys
             from pathlib import Path
 
-            source_path = Path(pathname).resolve()
-            path_parts = source_path.parts
-            python_search_paths = [Path(p).resolve() for p in sys.path if p]
-            for python_search_path in python_search_paths:
+            source = Path(pathname).resolve()
+            parts = source.parts
+            for path in [Path(p).resolve() for p in sys.path if p]:
                 try:
-                    relative_path = source_path.relative_to(python_search_path)
-                    relative_parts = relative_path.parts
-                    for index, part in enumerate(relative_parts[:-1]):
-                        potential_package = python_search_path / Path(
-                            *relative_parts[: index + 1]
-                        )
-                        if (potential_package / "__init__.py").exists():
-                            module_parts = relative_parts[index:]
-                            if module_parts[-1].endswith(".py"):
-                                module_parts = module_parts[:-1] + (
-                                    module_parts[-1][:-3],
-                                )
-                            return ".".join(module_parts)
+                    relparts = source.relative_to(path).parts
+                    for index, part in enumerate(relparts[:-1]):
+                        candidate = path / Path(*relparts[: index + 1])
+                        if (candidate / "__init__.py").exists():
+                            segments = relparts[index:]
+                            if segments[-1].endswith(".py"):
+                                segments = segments[:-1] + (segments[-1][:-3],)
+                            return ".".join(segments)
                 except ValueError:
                     continue
-            package_parts = []
-            current_path = source_path.parent
-            while current_path != current_path.parent:
-                if (current_path / "__init__.py").exists():
-                    package_parts.insert(0, current_path.name)
-                    current_path = current_path.parent
+            components = []
+            parent = source.parent
+            while parent != parent.parent:
+                if (parent / "__init__.py").exists():
+                    components.insert(0, parent.name)
+                    parent = parent.parent
                 else:
                     break
-            if package_parts:
-                module_name = source_path.stem
-                package_parts.append(module_name)
-                return ".".join(package_parts)
-            for index, part in enumerate(path_parts):
+            if components:
+                components.append(source.stem)
+                return ".".join(components)
+            for index, part in enumerate(parts):
                 if part in ("site-packages", "dist-packages"):
-                    if index + 1 < len(path_parts):
-                        remaining_parts = path_parts[index + 1 :]
-                        for idx, _ in enumerate(remaining_parts[:-1]):
-                            potential_package = Path(
-                                *path_parts[: index + 1]
-                            ) / Path(*remaining_parts[: idx + 1])
-                            if (potential_package / "__init__.py").exists():
-                                module_parts = remaining_parts[idx:]
-                                if module_parts[-1].endswith(".py"):
-                                    module_parts = module_parts[:-1] + (
-                                        module_parts[-1][:-3],
+                    if index + 1 < len(parts):
+                        rest = parts[index + 1 :]
+                        for idx, _ in enumerate(rest[:-1]):
+                            candidate = Path(*parts[: index + 1]) / Path(
+                                *rest[: idx + 1]
+                            )
+                            if (candidate / "__init__.py").exists():
+                                segments = rest[idx:]
+                                if segments[-1].endswith(".py"):
+                                    segments = segments[:-1] + (
+                                        segments[-1][:-3],
                                     )
-                                return ".".join(module_parts)
+                                return ".".join(segments)
                         break
-            for index in range(len(path_parts) - 1, 0, -1):
-                potential_root = Path(*path_parts[:index])
+            for index in range(len(parts) - 1, 0, -1):
                 if any(
-                    (potential_root / marker).exists()
+                    (Path(*parts[:index]) / marker).exists()
                     for marker in [
                         "setup.py",
                         "pyproject.toml",
@@ -372,27 +363,22 @@ class ColouredFormatter(LaurenFormatter):
                         "requirements.txt",
                     ]
                 ):
-                    for idx in range(index, len(path_parts)):
-                        potential_package = Path(*path_parts[: idx + 1])
-                        if (potential_package / "__init__.py").exists():
-                            module_parts = path_parts[idx:]
-                            if module_parts[-1].endswith(".py"):
-                                module_parts = module_parts[:-1] + (
-                                    module_parts[-1][:-3],
-                                )
-                            return ".".join(module_parts)
+                    for idx in range(index, len(parts)):
+                        candidate = Path(*parts[: idx + 1])
+                        if (candidate / "__init__.py").exists():
+                            segments = parts[idx:]
+                            if segments[-1].endswith(".py"):
+                                segments = segments[:-1] + (segments[-1][:-3],)
+                            return ".".join(segments)
                     break
-            for index in range(len(path_parts) - 1, -1, -1):
-                potential_path = Path(*path_parts[:index])
-                if (potential_path / "__init__.py").exists():
-                    if index < len(path_parts) - 1:
-                        module_parts = path_parts[index:]
-                        if module_parts[-1].endswith(".py"):
-                            module_parts = module_parts[:-1] + (
-                                module_parts[-1][:-3],
-                            )
-                        return ".".join(module_parts)
-            return source_path.stem
+            for index in range(len(parts) - 1, -1, -1):
+                if (Path(*parts[:index]) / "__init__.py").exists():
+                    if index < len(parts) - 1:
+                        segments = parts[index:]
+                        if segments[-1].endswith(".py"):
+                            segments = segments[:-1] + (segments[-1][:-3],)
+                        return ".".join(segments)
+            return source.stem
         except Exception:
             return None
 
@@ -433,18 +419,20 @@ class ColouredFormatter(LaurenFormatter):
         :return: Formatted log message, with colours only for TTY
             output.
         """
-        record_copy = logging.makeLogRecord(record.__dict__)
-        qualified_name = self.generate_qualname(record)
-        record_copy.qualName = qualified_name
+        clone = logging.makeLogRecord(record.__dict__)
+        qualname = self.make_qualname(record)
+        clone.qualName = qualname
         if hasattr(self, "is_tty") and self.is_tty:
             colour = self.COLORS.get(record.levelname, self.COLORS["RESET"])
-            record_copy.levelname = (
+            clone.levelname = (
                 f"{colour}{record.levelname:>8s}{self.COLORS['RESET']}"
             )
-            record_copy.qualName = f"{self.COLORS['QUALNAME']}{qualified_name}{self.COLORS['RESET']}"
+            clone.qualName = (
+                f"{self.COLORS['QUALNAME']}{qualname}{self.COLORS['RESET']}"
+            )
         else:
-            record_copy.levelname = f"{record.levelname:>8s}"
-        return super().format(record_copy)
+            clone.levelname = f"{record.levelname:>8s}"
+        return super().format(clone)
 
 
 def configure(config: LoggingConfig) -> None:
@@ -462,73 +450,69 @@ def configure(config: LoggingConfig) -> None:
 
     :param config: Logging configuration settings.
     """
-    log_handlers: list[logging.Handler] = []
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(getattr(logging, config.level.upper()))
+    handlers: list[logging.Handler] = []
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    logger.setLevel(getattr(logging, config.level.upper()))
     if config.tty.enabled:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(getattr(logging, config.tty.level.upper()))
+        tty = logging.StreamHandler(sys.stdout)
+        tty.setLevel(getattr(logging, config.tty.level.upper()))
         if config.as_json:
-            console_formatter = JSONFormatter()
+            formatter = JSONFormatter()
         else:
-            console_formatter = ColouredFormatter(
+            formatter = ColouredFormatter(
                 fmt=config.tty.fmt,
                 datefmt=config.datefmt,
                 extra_format="[{key}: {value}]",
                 extra_separator=" ",
             )
-            console_formatter.is_tty = True
-        console_handler.setFormatter(console_formatter)
-        log_handlers.append(console_handler)
+            formatter.is_tty = True
+        tty.setFormatter(formatter)
+        handlers.append(tty)
     if config.file.enabled:
-        file_path = Path(config.file.path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
+        file = Path(config.file.path)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
             filename=config.file.path,
             maxBytes=dehumanise(config.file.max_size),
             backupCount=config.file.backups,
             encoding=config.file.encoding,
         )
-        file_handler.setLevel(getattr(logging, config.file.level.upper()))
+        handler.setLevel(getattr(logging, config.file.level.upper()))
         if config.as_json:
-            file_formatter = JSONFormatter()
+            formatter = JSONFormatter()
         else:
-            file_formatter = ColouredFormatter(
+            formatter = ColouredFormatter(
                 fmt=config.file.fmt,
                 datefmt=config.datefmt,
                 extra_format="[{key}: {value}]",
                 extra_separator=" ",
             )
-            file_formatter.is_tty = False
-        file_handler.setFormatter(file_formatter)
-        log_handlers.append(file_handler)
+            formatter.is_tty = False
+        handler.setFormatter(formatter)
+        handlers.append(handler)
     if config.syslog.enabled:
         try:
-            syslog_handler = logging.handlers.SysLogHandler(
+            handler = logging.handlers.SysLogHandler(
                 address=config.syslog.address,
                 facility=getattr(
                     logging.handlers.SysLogHandler,
                     f"LOG_{config.syslog.facility.upper()}",
                 ),
             )
-            syslog_handler.setLevel(getattr(logging, config.level.upper()))
-            syslog_formatter = logging.Formatter(
-                "lauren: %(levelname)s %(message)s"
-            )
-            syslog_handler.setFormatter(syslog_formatter)
-            log_handlers.append(syslog_handler)
+            handler.setLevel(getattr(logging, config.level.upper()))
+            formatter = logging.Formatter("lauren: %(levelname)s %(message)s")
+            handler.setFormatter(formatter)
+            handlers.append(handler)
         except Exception as error:
             print(
                 f"Warning: Could not configure syslog handler: {error}",
                 file=sys.stderr,
             )
-    for log_handler in log_handlers:
-        root_logger.addHandler(log_handler)
-    for component_name, log_level in config.component_levels.items():
-        logging.getLogger(component_name).setLevel(
-            getattr(logging, log_level.upper())
-        )
+    for handler in handlers:
+        logger.addHandler(handler)
+    for component, level in config.component_levels.items():
+        logging.getLogger(component).setLevel(getattr(logging, level.upper()))
     if not config.development.debug_requests:
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         logging.getLogger("requests").setLevel(logging.WARNING)
@@ -549,20 +533,18 @@ def dehumanise(size: str) -> int:
     :return: Size in bytes.
     """
     size = size.upper().strip()
-    size_multipliers = {
+    multipliers = {
         "B": 1,
         "KB": 1024,
         "MB": 1024**2,
         "GB": 1024**3,
         "TB": 1024**4,
     }
-    size_match = re.match(r"^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$", size)
-    if not size_match:
+    matched = re.match(r"^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$", size)
+    if not matched:
         raise ValueError(f"Invalid size format: {size}")
-    numeric_value, size_unit = size_match.groups()
-    return int(
-        float(numeric_value) * size_multipliers.get(size_unit or "B", 1)
-    )
+    value, unit = matched.groups()
+    return int(float(value) * multipliers.get(unit or "B", 1))
 
 
 def get_logger(logger_name: str) -> logging.Logger:
@@ -602,30 +584,30 @@ def perf_logger(func: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
     def wrapper(*args: t.Any, **kwargs: t.Any) -> t.Any:
         """Wrapper function to log execution time."""
         logger = get_logger(func.__module__)
-        start_time = time.perf_counter()
+        started = time.perf_counter()
         try:
             result = func(*args, **kwargs)
-            execution_time = time.perf_counter() - start_time
+            elapsed = time.perf_counter() - started
             logger.debug(
-                f"Function: {func.__qualname__} completed in "
-                f"{execution_time:.4f}s",
+                f"Function: {func.__qualname__!r} completed in "
+                f"{elapsed:.4f}s",
                 extra={
                     "function": func.__qualname__,
                     "func_module": func.__module__,
-                    "execution_time": execution_time,
+                    "elapsed": elapsed,
                 },
             )
             return result
         except Exception as exc:
-            execution_time = time.perf_counter() - start_time
+            elapsed = time.perf_counter() - started
             logger.error(
-                f"Function {func.__name__} failed after "
-                f"{execution_time:.4f}s: {exc}",
+                f"Function {func.__name__!r} failed after "
+                f"{elapsed:.4f}s: {exc}",
                 extra={
                     "function": func.__name__,
                     "func_module": func.__module__,
                     "error": str(exc),
-                    "execution_time": execution_time,
+                    "elapsed": elapsed,
                 },
                 exc_info=True,
             )
@@ -661,18 +643,18 @@ class RequestContext:
                 # Perform operations within the request context
                 logger.info("This log will include the request ID")
 
-    :param request_id: Unique request identifier.
-    :var _current_id: Class variable to store the current request ID.
+    :param id: Unique request identifier.
+    :var current: Class variable to store the current request ID.
         This is used to track the request ID across different parts of
         the application and is set when entering the context manager.
     """
 
-    _current_id: str | None = None
+    current: str | None = None
 
-    def __init__(self, request_id: str):
+    def __init__(self, id: str):
         """Initialise a request context instance with an ID."""
-        self.request_id = request_id
-        self.previous_request_id = None
+        self.id = id
+        self.previous = None
 
     def __enter__(self) -> RequestContext:
         """Enter request context.
@@ -686,8 +668,8 @@ class RequestContext:
 
         :return: The current request context instance.
         """
-        self.previous_request_id = RequestContext._current_id
-        RequestContext._current_id = self.request_id
+        self.previous = RequestContext.current
+        RequestContext.current = self.id
         return self
 
     def __exit__(
@@ -700,12 +682,12 @@ class RequestContext:
         the request is completed, preventing any accidental leakage of
         request IDs across different requests.
         """
-        RequestContext._current_id = self.previous_request_id
+        RequestContext.current = self.previous
 
     @classmethod
     def get_current_id(cls) -> str | None:
         """Get current request ID."""
-        return cls._current_id
+        return cls.current
 
 
 class RequestIdFilter(logging.Filter):
@@ -740,5 +722,5 @@ class RequestIdFilter(logging.Filter):
         :param record: Log record to modify.
         :return: `True` to keep the record.
         """
-        record.request_id = RequestContext.get_current_id() or "unknown"
+        record.id = RequestContext.getcurrent() or "unknown"
         return True

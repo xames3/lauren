@@ -4,7 +4,7 @@ Configurations
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Sunday, July 06 2025
+Last updated on: Sunday, July 07 2025
 
 This module defines the configuration settings for the L.A.U.R.E.N
 framework. These settings are designed to be extensible and can be
@@ -104,10 +104,6 @@ class FileLoggingConfig(BaseConfig):
         default=5,
         description="Number of backup log files to retain.",
         ge=0,
-    )
-    style: str = Field(
-        default="spring-boot",
-        description="Logging style: 'enhanced', 'spring-boot', or 'basic'.",
     )
 
     class Config:
@@ -463,6 +459,7 @@ class LoggingConfig(BaseConfig):
         env_nested_delimiter = "__"
         case_sensitive = False
         populate_by_name = True
+        extra = "ignore"
 
 
 class StorageConfig(BaseConfig):
@@ -591,3 +588,4 @@ class LaurenConfig(BaseConfig):
         env_prefix = "LAUREN_"
         env_nested_delimiter = "__"
         case_sensitive = False
+        extra = "ignore"
