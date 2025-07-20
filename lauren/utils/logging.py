@@ -4,7 +4,7 @@ Logging
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Sunday, July 07 2025
+Last updated on: Sunday, July 20 2025
 
 This module provides logging utilities and configuration helpers for the
 L.A.U.R.E.N framework. The logging system aims to be production-ready,
@@ -451,9 +451,18 @@ def configure(config: LoggingConfig) -> None:
     :param config: Logging configuration settings.
     """
     handlers: list[logging.Handler] = []
+    levels: list[str] = []
     logger = logging.getLogger()
     logger.handlers.clear()
-    logger.setLevel(getattr(logging, config.level.upper()))
+    if config.tty.enabled:
+        levels.append(getattr(logging, config.tty.level.upper()))
+    if config.file.enabled:
+        levels.append(getattr(logging, config.file.level.upper()))
+    if config.syslog.enabled:
+        levels.append(getattr(logging, config.level.upper()))
+    logger.setLevel(
+        min(levels) if levels else getattr(logging, config.level.upper())
+    )
     if config.tty.enabled:
         tty = logging.StreamHandler(sys.stdout)
         tty.setLevel(getattr(logging, config.tty.level.upper()))
