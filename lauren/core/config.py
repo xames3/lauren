@@ -4,7 +4,7 @@ Configurations
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Sunday, July 07 2025
+Last updated on: Saturday, July 19 2025
 
 This module defines the configuration settings for the L.A.U.R.E.N
 framework. These settings are designed to be extensible and can be
@@ -32,15 +32,15 @@ from pathlib import Path
 from pydantic import Field
 
 try:
-    from pydantic_settings import BaseSettings as BaseConfig
+    from pydantic_settings import BaseSettings
 except ImportError:
-    from pydantic import BaseSettings as BaseConfig
+    from pydantic import BaseSettings
 
 __all__: list[str] = [
     "AsyncLoggingConfig",
+    "BaseConfig",
     "DevelopmentConfig",
     "FileLoggingConfig",
-    "LaurenConfig",
     "LoggingConfig",
     "PerformanceConfig",
     "PluginConfig",
@@ -57,7 +57,7 @@ log_format: str = (
 )
 
 
-class FileLoggingConfig(BaseConfig):
+class FileLoggingConfig(BaseSettings):
     """File logging configurations.
 
     This class provides configuration settings for logging to a file with
@@ -113,7 +113,7 @@ class FileLoggingConfig(BaseConfig):
         case_sensitive = False
 
 
-class TTYLoggingConfig(BaseConfig):
+class TTYLoggingConfig(BaseSettings):
     """Console or TTY logging configuration.
 
     This class provides configuration settings for logging to the console
@@ -158,7 +158,7 @@ class TTYLoggingConfig(BaseConfig):
         case_sensitive = False
 
 
-class SyslogConfig(BaseConfig):
+class SyslogConfig(BaseSettings):
     """Syslog configuration.
 
     This class provides configuration for logging to syslog, allowing
@@ -198,7 +198,7 @@ class SyslogConfig(BaseConfig):
         case_sensitive = False
 
 
-class RemoteLoggingConfig(BaseConfig):
+class RemoteLoggingConfig(BaseSettings):
     """Remote log aggregation configuration.
 
     This class provides configuration for sending logs to a remote
@@ -238,7 +238,7 @@ class RemoteLoggingConfig(BaseConfig):
         case_sensitive = False
 
 
-class PerformanceConfig(BaseConfig):
+class PerformanceConfig(BaseSettings):
     """Performance and observability configuration.
 
     This class provides configuration for performance logging, including
@@ -285,7 +285,7 @@ class PerformanceConfig(BaseConfig):
         case_sensitive = False
 
 
-class AsyncLoggingConfig(BaseConfig):
+class AsyncLoggingConfig(BaseSettings):
     """Asynchronous logging configuration for high-performance
     applications.
 
@@ -337,7 +337,7 @@ class AsyncLoggingConfig(BaseConfig):
         case_sensitive = False
 
 
-class DevelopmentConfig(BaseConfig):
+class DevelopmentConfig(BaseSettings):
     """Development and debugging configuration.
 
     This class provides configuration for development and debugging
@@ -373,7 +373,7 @@ class DevelopmentConfig(BaseConfig):
         case_sensitive = False
 
 
-class LoggingConfig(BaseConfig):
+class LoggingConfig(BaseSettings):
     """Logging configuration.
 
     This class provides extensive logging configuration options suitable
@@ -462,7 +462,7 @@ class LoggingConfig(BaseConfig):
         extra = "ignore"
 
 
-class StorageConfig(BaseConfig):
+class StorageConfig(BaseSettings):
     """Storage configuration for application data.
 
     This class provides configuration settings for the storage system. It
@@ -483,7 +483,7 @@ class StorageConfig(BaseConfig):
     )
 
 
-class TelemetryConfig(BaseConfig):
+class TelemetryConfig(BaseSettings):
     """Telemetry and observability configuration.
 
     This class provides configuration settings for telemetry and
@@ -511,7 +511,7 @@ class TelemetryConfig(BaseConfig):
     )
 
 
-class PluginConfig(BaseConfig):
+class PluginConfig(BaseSettings):
     """Plugin discovery and management configuration.
 
     This class provides configuration settings for discovering and
@@ -536,7 +536,7 @@ class PluginConfig(BaseConfig):
     )
 
 
-class LaurenConfig(BaseConfig):
+class BaseConfig(BaseSettings):
     """Primary configuration object.
 
     This class serves as the main configuration object. It aggregates
@@ -562,7 +562,7 @@ class LaurenConfig(BaseConfig):
         description="Enable debug mode.",
     )
     name: str = Field(
-        default="L.A.U.R.E.N",
+        default="lauren",
         description="The name of the application.",
     )
     logging: LoggingConfig = Field(
