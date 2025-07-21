@@ -369,7 +369,7 @@ class App(metaclass=AppMeta):
         configure(self._config.logging)
         self._logger = get_logger(__name__)
         self._logger.debug("Initialising L.A.U.R.E.N...")
-        self._tracer = get_tracer(self._config.name)
+        self._tracer = get_tracer(config=self._config)
         self._runtime = AppContext(
             user=user.get(None),
             session=session.get(None),
