@@ -4,7 +4,7 @@ Application
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Sunday, July 20 2025
+Last updated on: Monday, July 21 2025
 
 This module provides the foundational application class for building
 L.A.U.R.E.N powered applications. The `App` class serves as an abstract
@@ -29,16 +29,18 @@ from dataclasses import field
 from dataclasses import replace
 from uuid import uuid4
 
-from opentelemetry.trace import Tracer
-
 from lauren.core.config import Config
-from lauren.core.plugin import Plugin
 from lauren.core.plugin import PluginManager
 from lauren.utils.logging import configure
 from lauren.utils.logging import get_logger
 from lauren.utils.opentelemetry import get_tracer
 
-__all__: list[str] = ["App", "ContextManager", "ExecutionContext"]
+if t.TYPE_CHECKING:
+    from opentelemetry.trace import Tracer
+
+    from lauren.core.plugin import Plugin
+
+__all__: list[str] = ["App", "ContextManager", "AppContext"]
 
 user: ContextVar[str | None] = ContextVar("user", default=None)
 session: ContextVar[str | None] = ContextVar("session", default=None)
@@ -46,7 +48,7 @@ metadata: ContextVar[dict[str, t.Any]] = ContextVar("metadata", default={})
 
 
 @dataclass(frozen=True)
-class ExecutionContext:
+class AppContext:
     """Execution context for request processing.
 
     This context captures the essential state information for processing
@@ -86,67 +88,63 @@ class ContextManager:
     evaluation and efficient state management.
     """
 
-    def __init__(self, context: ExecutionContext) -> None:
+    def __init__(self, context: AppContext) -> None:
         """Initialise the context manager with an execution context."""
-        if not isinstance(context, ExecutionContext):
+        if not isinstance(context, AppContext):
             raise TypeError(
-                f"Expected ExecutionContext, got {type(context).__name__}"
+                f"Expected AppContext, got {type(context).__name__}"
             )
         self._context = context
         self._initial_state = context
-        self._observers: list[
-            t.Callable[[ExecutionContext, ExecutionContext], None]
-        ] = []
+        self._observers: list[t.Callable[[AppContext, AppContext], None]] = []
 
     @property
-    def context(self) -> ExecutionContext:
+    def context(self) -> AppContext:
         """Access the current execution context."""
         return self._context
 
     def add_observer(
         self,
-        callback: t.Callable[[ExecutionContext, ExecutionContext], None],
+        observer: t.Callable[[AppContext, AppContext], None],
     ) -> None:
         """Add an observer for context changes.
 
         This allows external components to react to context changes,
         such as logging, tracing, or triggering additional workflows.
 
-        :param callback: A callable that takes the old and new context
+        :param observer: A callable that takes the old and new context
             as arguments. It should handle any exceptions internally to
             avoid breaking the context management flow.
-        :raises TypeError: If the callback is not callable.
+        :raises TypeError: If the observer is not callable.
         """
-        if not callable(callback):
-            raise TypeError(
-                f"Expected callable, got {type(callback).__name__}"
-            )
-        self._observers.append(callback)
+        if not callable(observer):
+            raise TypeError(f"{type(observer).__name__} must be a callable")
+        self._observers.append(observer)
 
     def remove_observer(
         self,
-        callback: t.Callable[[ExecutionContext, ExecutionContext], None],
+        observer: t.Callable[[AppContext, AppContext], None],
     ) -> None:
         """Remove an observer for context changes.
 
         This allows for dynamic management of observers, enabling
         components to stop receiving notifications about context changes.
 
-        :param callback: The observer to remove.
-        :raises ValueError: If the callback is not found in the
+        :param observer: The observer to remove.
+        :raises ValueError: If the observer is not found in the
             observers list.
         """
-        if callback in self._observers:
-            self._observers.remove(callback)
+        if observer in self._observers:
+            self._observers.remove(observer)
         else:
             raise ValueError(
-                f"Observer: {callback} not found in current context observers"
+                f"Observer: {observer} not found in current context observers"
             )
 
-    def _notify_observers(
+    def notify_observers(
         self,
-        old_context: ExecutionContext,
-        new_context: ExecutionContext,
+        old_context: AppContext,
+        new_context: AppContext,
     ) -> None:
         """Notify all observers of context changes.
 
@@ -180,7 +178,7 @@ class ContextManager:
             self._context,
             metadata={**self._context.metadata, name: value},
         )
-        self._notify_observers(old_context, self._context)
+        self.notify_observers(old_context, self._context)
 
     def get(self, name: str, default: t.Any | None = None) -> t.Any | None:
         """Get a value from the execution context.
@@ -233,19 +231,19 @@ class ContextManager:
                 k: v for k, v in self._context.metadata.items() if k != name
             },
         )
-        self._notify_observers(old_context, self._context)
+        self.notify_observers(old_context, self._context)
 
     def clear(self) -> None:
         """Clear all metadata from the execution context."""
         old_context = self._context
         self._context = replace(self._context, metadata={})
-        self._notify_observers(old_context, self._context)
+        self.notify_observers(old_context, self._context)
 
     def reset(self) -> None:
         """Reset the execution context to its initial state."""
         old_context = self._context
         self._context = self._initial_state
-        self._notify_observers(old_context, self._context)
+        self.notify_observers(old_context, self._context)
 
     def fork(self, **overrides: t.Any) -> "ContextManager":
         """Create a new context manager with modified state.
@@ -297,29 +295,29 @@ class AppMeta(type):
         if subclassed:
             if "process" in namespaces:
                 raise TypeError("Cannot override the 'process' method")
-            cls._validate_required_methods(namespaces)
+            cls._validate_methods(namespaces)
             cls._setup_observability_hooks(namespaces)
             cls._configure_lazy_loading(namespaces)
         return super().__new__(cls, name, bases, namespaces)
 
     @staticmethod
-    def _validate_required_methods(namespaces: dict[str, t.Any]) -> None:
-        """Validate that required methods are properly implemented.
+    def _validate_methods(namespaces: dict[str, t.Any]) -> None:
+        """Validate that required methods are implemented.
 
-        This method checks that the `handle` method is defined and is a
-        callable function. This ensures that all subclasses of `App`
+        This method checks that some required methods are defined and are
+        callable object(s). This ensures that all subclasses of `App`
         implement the necessary application logic interface.
 
-        :param namespaces: The class namespace containing methods and
-            attributes to validate.
-        :raises TypeError: If the `handle` method is not defined or
-            is not callable.
+        :param namespaces: The class namespace containing methods to
+            validate.
+        :raises TypeError: If methods are not defined or not callable.
         """
-        if "handle" not in namespaces:
-            return
-        method = namespaces["handle"]
-        if not callable(method):
-            raise TypeError("'handle' must be a callable method")
+        methods = {"handle"}
+        for _method in methods:
+            if _method in namespaces:
+                method = namespaces[_method]
+                if not callable(method):
+                    raise TypeError(f"{_method!r} must be a callable")
 
     @staticmethod
     def _setup_observability_hooks(namespaces: dict[str, t.Any]) -> None:
@@ -372,31 +370,28 @@ class App(metaclass=AppMeta):
         self._logger = get_logger(__name__)
         self._logger.debug("Initialising L.A.U.R.E.N...")
         self._tracer = get_tracer(self._config.name)
-        self._execution_context = ExecutionContext(
+        self._runtime = AppContext(
             user=user.get(None),
             session=session.get(None),
             metadata=metadata.get({}).copy(),
             request=str(uuid4()),
             timestamp=time.time(),
         )
-        self._context_manager = ContextManager(self._execution_context)
-        self._context_manager.add_observer(self._on_context_change)
+        self._audit: list[dict[str, t.Any]] = []
         self._security_policies: list[t.Callable[[t.Any], bool]] = []
-        self._audit_trail: list[dict[str, t.Any]] = []
+        self._context = ContextManager(self._runtime)
+        self._context.add_observer(self._observe_context)
         self._metrics: dict[str, t.Any] = {
             "requests_processed": 0,
             "processing_time": 0.0,
             "plugin_loaded": 0,
             "context_changes": 0,
         }
-        self._plugin_manager = PluginManager(self)
-        self._plugin_manager.add_validator(self._validate)
-        self._plugin_manager.add_observer(self._on_plugin_load)
-        lazy_config = getattr(self, "_lazy_config", {})
-        if lazy_config.get("plugins", False):
-            self._plugin_manager.load(lazy=True)
-        else:
-            self._plugin_manager.load(lazy=False)
+        lazy = getattr(self, "_lazy_config", {})
+        self._plugins = PluginManager(self)
+        self._plugins.add_validator(self._validate_plugin)
+        self._plugins.add_observer(self._observe_plugin)
+        self._plugins.load(lazy=lazy.get("plugins", False))
         self._initialised = True
         self._logger.debug("Initialisation complete...")
 
@@ -404,95 +399,8 @@ class App(metaclass=AppMeta):
         """Return a string representation of the core application."""
         return (
             f"<App(name={type(self).__name__!r}, "
-            f"plugins={len(self._plugin_manager.show())})>"
+            f"plugins={len(self._plugins.show())})>"
         )
-
-    def _setup_observability(self) -> None:
-        """Setup observability hooks"""
-        pass
-
-    def _on_context_change(
-        self,
-        old_context: ExecutionContext,
-        new_context: ExecutionContext,
-    ) -> None:
-        """Handle context changes for observability.
-
-        This method is called whenever the execution context changes,
-        allowing the application to maintain an audit trail of all
-        context modifications. It captures the old and new context
-        metadata, timestamps, and any relevant information for security
-        and compliance purposes.
-
-        :param old_context: The previous execution context before the
-            change.
-        :param new_context: The new execution context after the change.
-        """
-        self._metrics["context_changes"] += 1
-        self._audit_trail.append(
-            {
-                "type": "context_change",
-                "timestamp": time.time(),
-                "old_context": old_context.metadata,
-                "new_context": new_context.metadata,
-            }
-        )
-
-    def _on_plugin_load(self, name: str, plugin: Plugin) -> None:
-        """Handle plugin loading events.
-
-        This method is called whenever a plugin is successfully loaded
-        into the application. It captures the plugin name, version, and
-        timestamp of the loading event for observability and audit
-        trails. It also increments the plugin load metrics to track
-        plugin utilisation across the application.
-
-        :param name: The name of the plugin that was loaded.
-        :param plugin: The plugin instance that was loaded.
-        """
-        self._metrics["plugin_loaded"] += 1
-        self._audit_trail.append(
-            {
-                "type": "plugin_loaded",
-                "timestamp": time.time(),
-                "plugin_name": name,
-                "plugin_version": getattr(plugin, "version", "0.0.0"),
-            }
-        )
-
-    def _validate(self, plugin: Plugin) -> bool:
-        """Validate plugin security.
-
-        This method applies all registered security policies to the
-        plugin and returns `True` if all policies pass, or `False` if
-        any policy fails. This ensures that only safe plugins are loaded
-        into the application. The policies can include checks for
-        security vulnerabilities, compliance with coding standards, and
-        adherence to best practices.
-
-        :param plugin: The plugin instance to validate.
-        :return: `True` if the plugin passes all security checks,
-            `False` otherwise.
-        """
-        return all(policy(plugin) for policy in self._security_policies)
-
-    def add_security_policy(self, policy: t.Callable[[t.Any], bool]) -> None:
-        """Add a security policy validator.
-
-        This method allows developers to register custom security
-        policies that will be applied to all plugins before they are
-        loaded into the application. Policies should be callable
-        functions that take a plugin instance and return `True` if the
-        plugin is safe to load, or `False` if it should be rejected.
-
-        :param policy: A callable that takes a plugin instance and
-            returns a boolean indicating whether the plugin is safe to
-            load.
-        :raises TypeError: If the policy is not callable.
-        """
-        if not callable(policy):
-            raise TypeError("Security policy must be a callable")
-        self._security_policies.append(policy)
 
     def __setattr__(self, name: str, value: t.Any) -> None:
         """Prevent direct attribute modification after initialisation.
@@ -516,9 +424,78 @@ class App(metaclass=AppMeta):
         else:
             super().__setattr__(name, value)
 
+    def _setup_observability_hooks(self) -> None:
+        """Setup observability hooks"""
+        pass
+
+    def _observe_context(
+        self,
+        old_context: AppContext,
+        new_context: AppContext,
+    ) -> None:
+        """Handle context changes for observability.
+
+        This method is called whenever the execution context changes,
+        allowing the application to maintain an audit trail of all
+        context modifications. It captures the old and new context
+        metadata, timestamps, and any relevant information for security
+        and compliance purposes.
+
+        :param old_context: The previous execution context before the
+            change.
+        :param new_context: The new execution context after the change.
+        """
+        self._metrics["context_changes"] += 1
+        self._audit.append(
+            {
+                "type": "context_change",
+                "timestamp": time.time(),
+                "old_context": old_context.metadata,
+                "new_context": new_context.metadata,
+            }
+        )
+
+    def _observe_plugin(self, name: str, plugin: Plugin) -> None:
+        """Handle plugin loading events.
+
+        This method is called whenever a plugin is successfully loaded
+        into the application. It captures the plugin name, version, and
+        timestamp of the loading event for observability and audit
+        trails. It also increments the plugin load metrics to track
+        plugin utilisation across the application.
+
+        :param name: The name of the plugin that was loaded.
+        :param plugin: The plugin instance that was loaded.
+        """
+        self._metrics["plugin_loaded"] += 1
+        self._audit.append(
+            {
+                "type": "plugin_loaded",
+                "timestamp": time.time(),
+                "plugin_name": name,
+                "plugin_version": getattr(plugin, "version", "0.0.0"),
+            }
+        )
+
+    def _validate_plugin(self, plugin: Plugin) -> bool:
+        """Validate plugin security using registered policies.
+
+        This method applies all registered security policies to the
+        plugin and returns `True` if all policies pass, or `False` if
+        any policy fails. This ensures that only safe plugins are loaded
+        into the application. The policies can include checks for
+        security vulnerabilities, compliance with coding standards, and
+        adherence to best practices.
+
+        :param plugin: The plugin instance to validate.
+        :return: `True` if the plugin passes all security checks,
+            `False` otherwise.
+        """
+        return all(policy(plugin) for policy in self._security_policies)
+
     @property
     def config(self) -> Config:
-        """Access the immutable configuration object."""
+        """Access the configuration object."""
         return self._config
 
     @property
@@ -534,31 +511,49 @@ class App(metaclass=AppMeta):
     @property
     def context(self) -> ContextManager:
         """Access the execution context manager."""
-        return self._context_manager
+        return self._context
 
     @property
     def plugins(self) -> PluginManager:
         """Access the plugin manager with lazy loading."""
-        return self._plugin_manager
+        return self._plugins
 
     @property
     def metrics(self) -> dict[str, t.Any]:
         """Access current metrics snapshot."""
         return {
             **self._metrics,
-            "plugins": self._plugin_manager.metrics(),
-            "uptime": (time.time() - self._context_manager.context.timestamp),
+            "plugins": self._plugins.metrics(),
+            "uptime": (time.time() - self._context.context.timestamp),
         }
 
     @property
-    def audit_trail(self) -> list[dict[str, t.Any]]:
+    def audit(self) -> list[dict[str, t.Any]]:
         """Access the audit trail for security and compliance."""
-        return self._audit_trail.copy()
+        return self._audit.copy()
+
+    def add_security_policy(self, policy: t.Callable[[t.Any], bool]) -> None:
+        """Add a security policy validator.
+
+        This method allows developers to register custom security
+        policies that will be applied to all plugins before they are
+        loaded into the application. Policies should be callable
+        functions that take a plugin instance and return `True` if the
+        plugin is safe to load, or `False` if it should be rejected.
+
+        :param policy: A callable that takes a plugin instance and
+            returns a boolean indicating whether the plugin is safe to
+            load.
+        :raises TypeError: If the policy is not callable.
+        """
+        if not callable(policy):
+            raise TypeError(f"{policy!r} must be a callable")
+        self._security_policies.append(policy)
 
     def process(
         self,
         prompt: str,
-        context: ExecutionContext | None = None,
+        context: AppContext | None = None,
     ) -> str:
         """Process a prompt through the application's logic.
 
@@ -578,38 +573,30 @@ class App(metaclass=AppMeta):
             defaults to `None`.
         :return: The application's response.
         """
-        start_time = time.time()
-        request_context = context or self._context_manager.context
-        context_is_valid = (
-            request_context.user is not None
-            or request_context.session is not None
-            or request_context.metadata
-        )
+        started = time.time()
+        ctx = context or self._context.context
+        valid = ctx.user is not None or ctx.session is not None or ctx.metadata
         with self.tracer.start_as_current_span("lauren.process") as sp:
             try:
                 sp.set_attribute("lauren.prompt", prompt)
-                sp.set_attribute("lauren.request", request_context.request)
-                if context_is_valid:
-                    if request_context.user:
-                        sp.set_attribute("lauren.user", request_context.user)
-                    if request_context.session:
-                        sp.set_attribute(
-                            "lauren.session", request_context.session
-                        )
+                sp.set_attribute("lauren.request", ctx.request)
+                if valid:
+                    if ctx.user:
+                        sp.set_attribute("lauren.user", ctx.user)
+                    if ctx.session:
+                        sp.set_attribute("lauren.session", ctx.session)
                 self.logger.debug("Processing user prompt...")
-                self._audit_trail.append(
+                self._audit.append(
                     {
                         "type": "request_start",
-                        "timestamp": start_time,
+                        "user": ctx.user,
+                        "context_id": ctx.request,
                         "prompt_hash": hash(prompt),
-                        "context_id": request_context.request,
-                        "user": request_context.user,
+                        "timestamp": started,
                     }
                 )
-                response = self.handle(
-                    prompt, request_context if context_is_valid else None
-                )
-                processing_time = time.time() - start_time
+                response = self.handle(prompt, ctx if valid else None)
+                processing_time = time.time() - started
                 self._metrics["requests_processed"] += 1
                 self._metrics["processing_time"] += processing_time
                 sp.set_attribute("lauren.response", response)
@@ -617,41 +604,41 @@ class App(metaclass=AppMeta):
                 self.logger.debug(
                     "Response generated",
                     extra={
-                        "processing.time": processing_time,
-                        "response": response,
                         "successful": True,
+                        "response": response,
+                        "processing_time": processing_time,
                     },
                 )
-                self._audit_trail.append(
+                self._audit.append(
                     {
+                        "success": True,
                         "type": "request_complete",
+                        "response_hash": hash(response),
                         "timestamp": time.time(),
                         "processing_time": processing_time,
-                        "response_hash": hash(response),
-                        "success": True,
                     }
                 )
                 return response
             except Exception as exc:
-                processing_time = time.time() - start_time
+                processing_time = time.time() - started
                 sp.set_attribute("lauren.error", str(exc))
                 sp.set_attribute("lauren.processing_time", processing_time)
                 self.logger.error(
                     "Request processing failed",
                     extra={
-                        "processing.time": processing_time,
-                        "error": str(exc),
                         "successful": False,
+                        "error": str(exc),
+                        "processing_time": processing_time,
                     },
                     exc_info=exc,
                 )
-                self._audit_trail.append(
+                self._audit.append(
                     {
+                        "success": False,
                         "type": "request_failed",
+                        "error": str(exc),
                         "timestamp": time.time(),
                         "processing_time": processing_time,
-                        "error": str(exc),
-                        "success": False,
                     }
                 )
                 raise
@@ -659,7 +646,7 @@ class App(metaclass=AppMeta):
     def handle(
         self,
         prompt: str,
-        context: ExecutionContext | None = None,
+        context: AppContext | None = None,
     ) -> str:
         """Prompt processing logic.
 
