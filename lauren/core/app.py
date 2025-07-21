@@ -414,11 +414,11 @@ class App(metaclass=AppMeta):
         :param value: The value to set for the attribute.
         """
         if hasattr(self, "_initialised") and self._initialised:
-            if name.startswith("_"):
+            if not name.startswith("_"):
                 super().__setattr__(name, value)
             else:
                 raise AttributeError(
-                    f"Cannot modify attribute {name!r} directly."
+                    f"Cannot modify private attribute {name!r} directly."
                     " Use appropriate methods"
                 )
         else:
@@ -523,7 +523,7 @@ class App(metaclass=AppMeta):
         """Access current metrics snapshot."""
         return {
             **self._metrics,
-            "plugins": self._plugins.metrics(),
+            "plugins": self._plugins.metrics,
             "uptime": (time.time() - self._context.context.timestamp),
         }
 

@@ -278,11 +278,11 @@ class Plugin(metaclass=PluginMeta):
             attribute after initialisation.
         """
         if hasattr(self, "_initialised") and self._initialised:
-            if name.startswith("_"):
+            if not name.startswith("_"):
                 super().__setattr__(name, value)
             else:
                 raise AttributeError(
-                    f"Cannot modify attribute {name!r} directly."
+                    f"Cannot modify private attribute {name!r} directly."
                     " Use appropriate methods"
                 )
         else:
@@ -647,7 +647,7 @@ class PluginManager:
         self._discovered = True
         self._app.logger.debug(
             f"Plugin discovery complete. Found {len(plugins)} plugins "
-            f"({len(self._builtins)} built-in and "
+            f"({len(self._builtins)} built-ins and "
             f"{len(self._installed)} installed)"
         )
         return plugins
@@ -955,10 +955,10 @@ class PluginManager:
                     "lauren.plugins.discovered", stats["plugins_discovered"]
                 )
                 self._app.logger.debug(
-                    "Lazy plugin loading enabled: "
-                    f"{stats['plugins_discovered']} plugin(s) available "
+                    "Plugins will be loaded lazily. "
+                    f"Available {stats['plugins_discovered']} plugins "
                     f"for on-demand loading ({stats['builtin_discovered']} "
-                    f"built-ins, {stats['installed_discovered']} installed)"
+                    f"built-ins and {stats['installed_discovered']} installed)"
                 )
             else:
                 discovered = self.discover_plugins()
@@ -984,16 +984,16 @@ class PluginManager:
                             exc_info=exc,
                         )
                         failed += 1
-            sp.set_attribute("lauren.plugins.loaded", loaded)
-            sp.set_attribute("lauren.plugins.failed", failed)
-            stats = self.statistics
-            self._app.logger.debug(
-                "Plugin loading complete. "
-                f"{stats['plugins_loaded']} plugins active "
-                f"({stats['builtin_loaded']} built-in and "
-                f"{stats['installed_loaded']} installed), "
-                f"{failed} failed to load"
-            )
+                sp.set_attribute("lauren.plugins.loaded", loaded)
+                sp.set_attribute("lauren.plugins.failed", failed)
+                stats = self.statistics
+                self._app.logger.debug(
+                    "Plugin loading complete. "
+                    f"{stats['plugins_loaded']} plugins active "
+                    f"({stats['builtin_loaded']} built-ins and "
+                    f"{stats['installed_loaded']} installed), "
+                    f"{failed} failed to load"
+                )
 
     def register_plugin(
         self,
