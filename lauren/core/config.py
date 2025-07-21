@@ -4,7 +4,7 @@ Configurations
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Friday, July 04 2025
-Last updated on: Saturday, July 19 2025
+Last updated on: Sunday, July 20 2025
 
 This module defines the configuration settings for the L.A.U.R.E.N
 framework. These settings are designed to be extensible and can be
@@ -38,7 +38,7 @@ except ImportError:
 
 __all__: list[str] = [
     "AsyncLoggingConfig",
-    "BaseConfig",
+    "Config",
     "DevelopmentConfig",
     "FileLoggingConfig",
     "LoggingConfig",
@@ -536,7 +536,7 @@ class PluginConfig(BaseSettings):
     )
 
 
-class BaseConfig(BaseSettings):
+class Config(BaseSettings):
     """Primary configuration object.
 
     This class serves as the main configuration object. It aggregates
