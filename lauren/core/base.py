@@ -7,9 +7,9 @@ Created on: Tuesday, July 22 2025
 Last updated on: Friday, July 25 2025
 
 This module provides the foundational base classes and utilities for
-the framework, including the `Component` class with enterprise
+the framework, including the `BaseComponent` class with enterprise
 capabilities, validation, security policies, and immutability
-enforcement. It also includes the `Context` class for representing
+enforcement. It also includes the `BaseContext` class for representing
 execution contexts, and various utility classes for metrics collection,
 audit trails, and immutability guards.
 
@@ -30,15 +30,16 @@ from abc import ABCMeta
 from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from uuid import uuid4
 
 from lauren.core.exceptions import ValidationError
 
 __all__: list[str] = [
     "AuditTrail",
-    "Component",
-    "ComponentMeta",
-    "Context",
+    "BaseComponent",
+    "BaseComponentMeta",
+    "BaseContext",
     "ImmutabilityGuard",
     "MetricsCollector",
     "Observer",
@@ -47,76 +48,18 @@ __all__: list[str] = [
 ]
 
 
-@dataclass(frozen=True)
-class Context:
-    """Immutable execution context for the framework components.
-
-    This context follows the value object pattern, providing thread-safe
-    state representation with comprehensive metadata support. This
-    allows components to operate with a consistent view of their
-    execution environment without risking state mutation during
-    processing.
-
-    :var name: Context name, typically the component name.
-    :var type: Context type, usually the component class name.
-    :var metadata: Additional metadata, defaults to empty dict.
-    :var timestamp: Context creation time, defaults to current time.
-    :var id: Unique identifier for tracing, defaults to a new UUID.
-    :raises ValueError: If name or type is not a non-empty string.
-    :raises TypeError: If metadata is not a dict.
-    """
-
-    name: str
-    type: str
-    metadata: dict[str, t.Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=lambda: time.time())
-    id: str = field(default_factory=lambda: str(uuid4()))
-
-    def __post_init__(self) -> None:
-        """Validate context after initialisation.
-
-        This method ensures that the context is properly configured with
-        valid name and type, and that metadata is a dictionary. This
-        guarantees that the context can be used safely across different
-        components without risking type errors or state inconsistencies.
-        """
-        checks = {self.name, self.type}
-        for check in checks:
-            if not check or not isinstance(check, str):
-                raise ValueError(f"Context {check} must be a non-empty string")
-        if not isinstance(self.metadata, dict):
-            raise TypeError("Context metadata must be a dictionary")
-
-    def extend(self, **metadata: t.Any) -> Context:
-        """Create new context with additional metadata.
-
-        This method allows creating a new context instance with the same
-        name and type, but with additional metadata. This is useful for
-        passing context-specific information without modifying the
-        original context, thus preserving immutability and thread
-        safety.
-
-        :param metadata: Additional metadata to include in the new
-            context.
-        :return: A new `Context` instance with the updated metadata.
-        """
-        return Context(
-            name=self.name,
-            type=self.type,
-            id=self.id,
-            timestamp=self.timestamp,
-            metadata={**self.metadata, **metadata},
-        )
-
-
 class Validator(ABC):
     """Validator for component validation."""
+
+    def __repr__(self) -> str:
+        """Return a string representation of the validator."""
+        return f"<{type(self).__name__}()>"
 
     @abstractmethod
     def __call__(
         self,
         component: t.Any,
-        context: Context | None = None,
+        context: BaseContext | None = None,
     ) -> bool:
         """Validate a component instance.
 
@@ -133,6 +76,10 @@ class Validator(ABC):
 
 class Observer(ABC):
     """Observer for the component lifecycle events."""
+
+    def __repr__(self) -> str:
+        """Return a string representation of the observer."""
+        return f"<{type(self).__name__}()>"
 
     @abstractmethod
     def __call__(
@@ -156,6 +103,10 @@ class Observer(ABC):
 
 class SecurityPolicy(ABC):
     """Security policy for component operations."""
+
+    def __repr__(self) -> str:
+        """Return a string representation of the security policy."""
+        return f"<{type(self).__name__}()>"
 
     @abstractmethod
     def __call__(
@@ -188,6 +139,10 @@ class MetricsCollector:
             "avg_execution_time": 0.0,
         }
 
+    def __repr__(self) -> str:
+        """Return a string representation of the metrics collector."""
+        return f"<{type(self).__name__}(metrics={self._internal})>"
+
     def record(self, execution_time: float) -> None:
         """Record execution metrics.
 
@@ -216,6 +171,10 @@ class AuditTrail:
     def __init__(self) -> None:
         """Initialise an empty audit trail."""
         self._internal: list[dict[str, t.Any]] = []
+
+    def __repr__(self) -> str:
+        """Return a string representation of the audit trail."""
+        return f"<{type(self).__name__}(audit={self._internal})>"
 
     def record(self, event: str, component: str, **data: t.Any) -> None:
         """Record an audit event.
@@ -290,7 +249,61 @@ class ImmutabilityGuard:
         )
 
 
-class ComponentMeta(ABCMeta):
+@dataclass(frozen=True)
+class BaseContext:
+    """Immutable execution context for the framework components.
+
+    This context follows the value object pattern, providing thread-safe
+    state representation with comprehensive metadata support. This
+    allows components to operate with a consistent view of their
+    execution environment without risking state mutation during
+    processing.
+
+    :var name: Context name, typically the component name.
+    :var type: Context type, usually the component class name.
+    :var metadata: Additional metadata, defaults to empty dict.
+    :var timestamp: Context creation time, defaults to current time.
+    :var id: Unique identifier for tracing, defaults to a new UUID.
+    :raises ValueError: If name or type is not a non-empty string.
+    :raises TypeError: If metadata is not a dict.
+    """
+
+    name: str
+    type: str
+    metadata: dict[str, t.Any] = field(default_factory=dict)
+    timestamp: float = field(default_factory=lambda: time.time())
+    id: str = field(default_factory=lambda: str(uuid4()))
+
+    def __post_init__(self) -> None:
+        """Validate context after initialisation.
+
+        This method ensures that the context is properly configured with
+        valid name and type, and that metadata is a dictionary. This
+        guarantees that the context can be used safely across different
+        components without risking type errors or state inconsistencies.
+        """
+        checks = {self.name, self.type}
+        for check in checks:
+            if not check or not isinstance(check, str):
+                raise ValueError(f"{check} must be a non-empty string")
+        if not isinstance(self.metadata, dict):
+            raise TypeError("metadata must be a dictionary")
+
+    def extend(self, **metadata: t.Any) -> BaseContext:
+        """Create new context with additional metadata.
+
+        This method allows creating a new context instance with the same
+        name and type, but with additional metadata. This is useful for
+        passing context-specific information without modifying the
+        original context, thus preserving immutability and thread
+        safety.
+
+        :return: A new `BaseContext` instance with the updated metadata.
+        """
+        return replace(self, metadata={**self.metadata, **metadata})
+
+
+class BaseComponentMeta(ABCMeta):
     """Elegant metaclass for framework components."""
 
     def __new__(
@@ -316,10 +329,10 @@ class ComponentMeta(ABCMeta):
         methods = kwargs.pop("methods", set())
         validators = kwargs.pop("validators", [])
         class_ = super().__new__(cls, name, bases, namespace)
-        if name == "Component":
+        if name == "BaseComponent":
             return class_
         if any(
-            issubclass(base, Component) for base in bases if base != class_
+            issubclass(base, BaseComponent) for base in bases if base != class_
         ):
             cls._validate_contract(class_, properties, methods)
             cls._register_validators(class_, validators)
@@ -371,7 +384,7 @@ class ComponentMeta(ABCMeta):
         cls._validators.extend(validators)
 
 
-class Component(metaclass=ComponentMeta):
+class BaseComponent(metaclass=BaseComponentMeta):
     """Foundational component with enterprise capabilities."""
 
     def __init__(
@@ -383,19 +396,19 @@ class Component(metaclass=ComponentMeta):
         **kwargs: t.Any,
     ) -> None:
         """Initialise component with injected dependencies."""
-        self._context: Context | None = None
+        self._context: BaseContext | None = None
         self._validators = validators or []
         self._observers = observers or []
         self._security_policies = security_policies or []
         self._immutability_guard = immutability_guard or ImmutabilityGuard()
         self._metrics_collector = MetricsCollector()
         self._audit_trail = AuditTrail()
-        self._initialised = True
         self._audit_trail.record(
             "component_created",
             type(self).__name__,
             timestamp=time.time(),
         )
+        self._initialised = True
         self._notify_observers("created", {"timestamp": time.time()})
 
     def __repr__(self) -> str:
@@ -433,7 +446,7 @@ class Component(metaclass=ComponentMeta):
             raise AttributeError(error)
 
     @property
-    def context(self) -> Context | None:
+    def context(self) -> BaseContext | None:
         """Access execution context."""
         return self._context
 
@@ -497,7 +510,7 @@ class Component(metaclass=ComponentMeta):
             raise TypeError("policy must implement SecurityPolicy interface")
         self._security_policies.append(policy)
 
-    def validate(self, context: Context | None = None) -> bool:
+    def validate(self, context: BaseContext | None = None) -> bool:
         """Validate component using all registered validators.
 
         This method runs all registered validators against the
@@ -553,7 +566,7 @@ class Component(metaclass=ComponentMeta):
             except Exception:
                 pass
 
-    def _create_context(self, **metadata: t.Any) -> Context:
+    def _create_context(self, **metadata: t.Any) -> BaseContext:
         """Create execution context for operations.
 
         This method creates a new context instance with the component's
@@ -563,14 +576,9 @@ class Component(metaclass=ComponentMeta):
         processing.
 
         :param metadata: Additional metadata to include in the context.
-        :return: A new `Context` instance with the updated metadata.
+        :return: A new `BaseContext` instance with the updated metadata.
         """
-        name = self._get_name()
-        return Context(
-            name=name,
-            type=type(self).__name__,
-            metadata=metadata,
-        )
+        return BaseContext(self._get_name(), type(self).__name__, metadata)
 
     def _record_audit_trail(self, event: str, **data: t.Any) -> None:
         """Record audit event.
@@ -590,7 +598,7 @@ class Component(metaclass=ComponentMeta):
         self._metrics_collector.record(execution_time)
 
     def _get_name(self) -> str:
-        """Get component name safely."""
+        """Get component name."""
         if hasattr(self, "name"):
             name = getattr(self, "name")
             return name() if callable(name) else str(name)
