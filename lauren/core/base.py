@@ -259,7 +259,6 @@ class ImmutabilityGuard:
         self,
         obj: t.Any,
         name: str,
-        value: t.Any,
     ) -> tuple[bool, str | None]:
         """Check if attribute modification is allowed.
 
@@ -270,7 +269,6 @@ class ImmutabilityGuard:
 
         :param obj: The object being modified.
         :param name: The attribute name.
-        :param value: The new value.
         :return: Tuple of (boolean of allowed or not, error_message).
         """
         if not hasattr(obj, "_initialised"):
