@@ -3,10 +3,13 @@ Exception
 =========
 
 Author: Akshay Mestry <xa@mes3.dev>
-Created on: Wednesday, July 24 2025
-Last updated on: Wednesday, July 24 2025
+Created on: Wednesday, July 23 2025
+Last updated on: Friday, July 25 2025
 
-...
+This module defines custom exceptions for the framework. These exceptions
+are used to handle errors related to security, validation, and other
+framework-specific issues. They provide a consistent way to manage errors
+across the framework, allowing for better error handling and debugging.
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ class SecurityError(LaurenException):
     :param message: The error message to be displayed.
     """
 
-    def __init__(self, message: str, component: str | None = None) -> None:
+    def __init__(self, message: str, *, component: str | None = None) -> None:
         """Initialise the security error with context."""
         super().__init__(message)
         if component:
@@ -72,7 +75,7 @@ class ValidationError(LaurenException):
     :param message: The error message to be displayed.
     """
 
-    def __init__(self, message: str, attribute: str | None = None) -> None:
+    def __init__(self, message: str, *, attribute: str | None = None) -> None:
         """Initialise the validation error with context."""
         super().__init__(message)
         if attribute:
