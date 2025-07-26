@@ -4,7 +4,7 @@ Base
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Tuesday, July 22 2025
-Last updated on: Friday, July 25 2025
+Last updated on: Saturday, July 26 2025
 
 This module provides the foundational base classes and utilities for
 the framework, including the `BaseComponent` class with enterprise
@@ -23,6 +23,7 @@ through the use of validators, observers, and security policies.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import typing as t
 from abc import ABC
@@ -56,7 +57,7 @@ class Validator(ABC):
         return f"<{type(self).__name__}()>"
 
     @abstractmethod
-    def __call__(
+    async def __call__(
         self,
         component: t.Any,
         context: BaseContext | None = None,
@@ -82,7 +83,7 @@ class Observer(ABC):
         return f"<{type(self).__name__}()>"
 
     @abstractmethod
-    def __call__(
+    async def __call__(
         self,
         event: str,
         component: t.Any,
@@ -109,7 +110,7 @@ class SecurityPolicy(ABC):
         return f"<{type(self).__name__}()>"
 
     @abstractmethod
-    def __call__(
+    async def __call__(
         self,
         component: t.Any,
         operation: str | None = None,
@@ -131,19 +132,27 @@ class MetricsCollector:
 
     def __init__(self) -> None:
         """Initialise metrics collector."""
-        self._internal: dict[str, t.Any] = {
+        self.data: dict[str, t.Any] = {
             "created_at": time.time(),
-            "execution_count": 0,
-            "last_execution": None,
-            "total_execution_time": 0.0,
-            "avg_execution_time": 0.0,
+            "exec_count": 0,
+            "last_exec": None,
+            "total_exec_time": 0.0,
+            "avg_exec_time": 0.0,
+            "min_exec_time": float("inf"),
+            "max_exec_time": 0.0,
+            "error_count": 0,
+            "success_count": 0,
+            "success_rate": 0.0,
+            "tokens_processed": 0,
+            "tokens_per_second": 0.0,
+            "memory_usage_mb": 0.0,
         }
 
     def __repr__(self) -> str:
         """Return a string representation of the metrics collector."""
-        return f"<{type(self).__name__}(metrics={self._internal})>"
+        return f"<{type(self).__name__}(metrics={self.data})>"
 
-    def record(self, execution_time: float) -> None:
+    def record(self, exec_time: float) -> None:
         """Record execution metrics.
 
         This method updates the internal metrics state with the latest
@@ -151,18 +160,53 @@ class MetricsCollector:
         the total execution time. It also calculates the average
         execution time based on the number of executions recorded.
 
-        :param execution_time: The time taken for the last execution.
+        :param exec_time: The time taken for the last execution.
         """
-        self._internal["execution_count"] += 1
-        self._internal["last_execution"] = time.time()
-        self._internal["total_execution_time"] += execution_time
-        count = self._internal["execution_count"]
-        total = self._internal["total_execution_time"]
-        self._internal["avg_execution_time"] = total / count
+        self.data["exec_count"] += 1
+        self.data["last_exec"] = time.time()
+        self.data["total_exec_time"] += exec_time
+        self.data["min_exec_time"] = min(self.data["min_exec_time"], exec_time)
+        self.data["max_exec_time"] = max(self.data["max_exec_time"], exec_time)
+        count = self.data["exec_count"]
+        total = self.data["total_exec_time"]
+        self.data["avg_exec_time"] = total / count if count > 0 else 0.0
+
+    def record_success(self) -> None:
+        """Record a successful operation."""
+        self.data["success_count"] += 1
+        self._update_success_rate()
+
+    def record_error(self) -> None:
+        """Record a failed operation."""
+        self.data["error_count"] += 1
+        self._update_success_rate()
+
+    def record_tokens(self, tokens: int, processing_time: float) -> None:
+        """Record token processing metrics for LLM operations.
+
+        :param tokens: Number of tokens processed.
+        :param processing_time: Time taken to process tokens.
+        """
+        self.data["tokens_processed"] += tokens
+        if processing_time > 0:
+            self.data["tokens_per_second"] = tokens / processing_time
+
+    def record_memory_usage(self, memory: float) -> None:
+        """Record memory usage metrics.
+
+        :param memory: Memory usage in megabytes.
+        """
+        self.data["memory_usage_mb"] = memory
+
+    def _update_success_rate(self) -> None:
+        """Update success rate calculation."""
+        total_ops = self.data["success_count"] + self.data["error_count"]
+        if total_ops > 0:
+            self.data["success_rate"] = self.data["success_count"] / total_ops
 
     def show(self) -> dict[str, t.Any]:
         """Return current metrics snapshot."""
-        return self._internal.copy()
+        return self.data.copy()
 
 
 class AuditTrail:
@@ -170,11 +214,11 @@ class AuditTrail:
 
     def __init__(self) -> None:
         """Initialise an empty audit trail."""
-        self._internal: list[dict[str, t.Any]] = []
+        self.data: list[dict[str, t.Any]] = []
 
     def __repr__(self) -> str:
         """Return a string representation of the audit trail."""
-        return f"<{type(self).__name__}(audit={self._internal})>"
+        return f"<{type(self).__name__}(audit={self.data})>"
 
     def record(self, event: str, component: str, **data: t.Any) -> None:
         """Record an audit event.
@@ -193,11 +237,11 @@ class AuditTrail:
             "component": component,
             **data,
         }
-        self._internal.append(entry)
+        self.data.append(entry)
 
     def show(self) -> list[dict[str, t.Any]]:
         """Return audit trail entries."""
-        return self._internal.copy()
+        return self.data.copy()
 
 
 class ImmutabilityGuard:
@@ -205,12 +249,12 @@ class ImmutabilityGuard:
 
     def __init__(
         self,
-        enfore_post_init: bool = True,
+        enforce_post_init: bool = True,
         allow_private: bool = True,
         strict: bool = False,
     ) -> None:
         """Initialise immutability guard with policy."""
-        self.enfore_post_init = enfore_post_init
+        self.enforce_post_init = enforce_post_init
         self.allow_private = allow_private
         self.strict = strict
 
@@ -232,7 +276,7 @@ class ImmutabilityGuard:
         """
         if not hasattr(obj, "_initialised"):
             return True, None
-        if not self.enfore_post_init:
+        if not self.enforce_post_init:
             return True, None
         if name.startswith("_") and self.allow_private:
             return True, None
@@ -263,7 +307,11 @@ class BaseContext:
     :var type: Context type, usually the component class name.
     :var metadata: Additional metadata, defaults to empty dict.
     :var timestamp: Context creation time, defaults to current time.
-    :var id: Unique identifier for tracing, defaults to a new UUID.
+    :var ctx_id: Unique identifier for tracing, defaults to a new UUID.
+    :var user_id: Optional user identifier for multi-tenant operations.
+    :var session_id: Optional session identifier for conversation tracking.
+    :var trace_id: Optional trace identifier for distributed tracing.
+    :var parent_id: Optional parent context for nested operations.
     :raises ValueError: If name or type is not a non-empty string.
     :raises TypeError: If metadata is not a dict.
     """
@@ -272,7 +320,11 @@ class BaseContext:
     type: str
     metadata: dict[str, t.Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=lambda: time.time())
-    id: str = field(default_factory=lambda: str(uuid4()))
+    ctx_id: str = field(default_factory=lambda: str(uuid4()))
+    user_id: str | None = field(default=None)
+    session_id: str | None = field(default=None)
+    trace_id: str | None = field(default=None)
+    parent_id: str | None = field(default=None)
 
     def __post_init__(self) -> None:
         """Validate context after initialisation.
@@ -301,6 +353,33 @@ class BaseContext:
         :return: A new `BaseContext` instance with the updated metadata.
         """
         return replace(self, metadata={**self.metadata, **metadata})
+
+    def fork(
+        self,
+        name: str,
+        type_: str,
+        **metadata: t.Any,
+    ) -> BaseContext:
+        """Fork a child context for nested operations.
+
+        This method creates a new context that inherits `user_id`,
+        `session_id`, and `trace_id` from the parent context, making it
+        suitable for nested operations within the same execution flow.
+
+        :param name: Name for the child context.
+        :param type_: Type for the child context.
+        :param metadata: Additional metadata for the child context.
+        :return: A new child BaseContext instance.
+        """
+        return BaseContext(
+            name=name,
+            type=type_,
+            metadata={**self.metadata, **metadata},
+            user_id=self.user_id,
+            session_id=self.session_id,
+            trace_id=self.trace_id,
+            parent_id=self.ctx_id,
+        )
 
 
 class BaseComponentMeta(ABCMeta):
@@ -409,7 +488,23 @@ class BaseComponent(metaclass=BaseComponentMeta):
             timestamp=time.time(),
         )
         self._initialised = True
-        self._notify_observers("created", {"timestamp": time.time()})
+        # NOTE(xames3): Defer notifying observers until after
+        # initialisation is complete. This avoids triggering observer
+        # logic while the component is still being set up, which could
+        # lead to inconsistent state or errors if attributes are not
+        # yet ready.
+        if self._is_running_asynchronously():
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._notify_observers(
+                        "created", {"timestamp": time.time()}
+                    )
+                )
+            except RuntimeError:
+                # If no event loop is running, we cannot notify
+                # observers.
+                pass
 
     def __repr__(self) -> str:
         """Provide informative string representation."""
@@ -439,7 +534,7 @@ class BaseComponent(metaclass=BaseComponentMeta):
         if not hasattr(self, "_immutability_guard"):
             super().__setattr__(name, value)
             return
-        allowed, error = self._immutability_guard.check(self, name, value)
+        allowed, error = self._immutability_guard.check(self, name)
         if allowed:
             super().__setattr__(name, value)
         else:
@@ -510,46 +605,78 @@ class BaseComponent(metaclass=BaseComponentMeta):
             raise TypeError("policy must implement SecurityPolicy interface")
         self._security_policies.append(policy)
 
-    def validate(self, context: BaseContext | None = None) -> bool:
+    async def validate(self, context: BaseContext | None = None) -> bool:
         """Validate component using all registered validators.
 
         This method runs all registered validators against the
         component, ensuring that it meets the required criteria for
-        execution within the framework. This is essential for ensuring
-        that the component is in a valid state before performing any
-        operations.
+        execution within the framework.
 
         :param context: Optional execution context for validation.
         :return: `True` if validation passes, `False` otherwise.
+
+        .. note::
+
+            Validation failures are logged to the audit trail for
+            debugging purposes.
         """
         for validator in self._validators:
             try:
-                if not validator(self, context):
+                if not await validator(self, context):
+                    self._audit_trail.record(
+                        "validation_failed",
+                        type(self).__name__,
+                        validator=type(validator).__name__,
+                    )
                     return False
-            except Exception:
+            except Exception as error:
+                self._audit_trail.record(
+                    "validation_error",
+                    type(self).__name__,
+                    validator=type(validator).__name__,
+                    error=str(error),
+                )
                 return False
         return True
 
-    def evaluate_security(self, operation: str | None = None) -> bool:
+    async def evaluate(self, operation: str | None = None) -> bool:
         """Evaluate security using all registered policies.
 
         This method checks whether the component's operations are
-        allowed based on the registered security policies. It ensures
-        that the component adheres to the security requirements defined
-        by the framework or users.
+        allowed based on the registered security policies.
 
         :param operation: Optional operation being performed.
         :return: `True` if operation is allowed, `False` otherwise.
+
+        .. note::
+
+            Security policy failures are logged to the audit trail for
+            compliance and debugging purposes.
         """
         for policy in self._security_policies:
             try:
-                if not policy(self, operation):
+                if not await policy(self, operation):
+                    self._audit_trail.record(
+                        "security_denied",
+                        type(self).__name__,
+                        policy=type(policy).__name__,
+                        operation=operation,
+                    )
                     return False
-            except Exception:
+            except Exception as error:
+                self._audit_trail.record(
+                    "security_error",
+                    type(self).__name__,
+                    policy=type(policy).__name__,
+                    operation=operation,
+                    error=str(error),
+                )
                 return False
         return True
 
-    def _notify_observers(self, event: str, data: dict[str, t.Any]) -> None:
+    async def _notify_observers(
+        self, event: str, data: dict[str, t.Any]
+    ) -> None:
         """Notify all observers of an event.
 
         This method triggers all registered observers, passing the event
@@ -559,12 +686,39 @@ class BaseComponent(metaclass=BaseComponentMeta):
 
         :param event: The name of the event to notify observers about.
         :param data: Additional data to pass to observers.
+
+        .. note::
+
+            Observer failures are logged but do not prevent other
+            observers from executing.
         """
+        if not self._observers:
+            return
+        tasks: list[asyncio.Task] = []
         for observer in self._observers:
             try:
-                observer(event, self, data)
-            except Exception:
-                pass
+                task = asyncio.create_task(observer(event, self, data))
+                tasks.append(task)
+            except Exception as error:
+                self._audit_trail.record(
+                    "observer_error",
+                    type(self).__name__,
+                    observer=type(observer).__name__,
+                    event=event,
+                    error=str(error),
+                )
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for index, result in enumerate(results):
+                if isinstance(result, Exception):
+                    observer = self._observers[index]
+                    self._audit_trail.record(
+                        "observer_failed",
+                        type(self).__name__,
+                        observer=type(observer).__name__,
+                        event=event,
+                        error=str(result),
+                    )
 
     def _create_context(self, **metadata: t.Any) -> BaseContext:
         """Create execution context for operations.
@@ -594,12 +748,21 @@ class BaseComponent(metaclass=BaseComponentMeta):
         self._audit_trail.record(event, type(self).__name__, **data)
 
     def _record_execution_metrics(self, execution_time: float) -> None:
-        """Record execution metrics."""
+        """Record execution metrics with success tracking."""
         self._metrics_collector.record(execution_time)
+        self._metrics_collector.record_success()
+
+    def _is_running_asynchronously(self) -> bool:
+        """Check if the application currently in an async context."""
+        try:
+            return asyncio.get_running_loop() is not None
+        except RuntimeError:
+            return False
 
     def _get_name(self) -> str:
         """Get component name."""
         if hasattr(self, "name"):
             name = getattr(self, "name")
-            return name() if callable(name) else str(name)
-        return "unknown"
+            result = name() if callable(name) else str(name)
+            return result if result and result.strip() else type(self).__name__
+        return type(self).__name__
