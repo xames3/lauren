@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import ConfigDict
 from pydantic import Field
 
 try:
@@ -106,11 +107,10 @@ class FileLoggingConfig(BaseSettings):
         ge=0,
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_FILE_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_FILE_",
+        case_sensitive=False,
+    )
 
 
 class TTYLoggingConfig(BaseSettings):
@@ -151,11 +151,10 @@ class TTYLoggingConfig(BaseSettings):
         description="Enable coloured console output (if supported).",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_TTY_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_TTY_",
+        case_sensitive=False,
+    )
 
 
 class SyslogConfig(BaseSettings):
@@ -191,11 +190,10 @@ class SyslogConfig(BaseSettings):
         description="Syslog facility to use.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_SYSLOG_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_SYSLOG_",
+        case_sensitive=False,
+    )
 
 
 class RemoteLoggingConfig(BaseSettings):
@@ -231,11 +229,10 @@ class RemoteLoggingConfig(BaseSettings):
         description="API key for remote log system authentication.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_REMOTE_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_REMOTE_",
+        case_sensitive=False,
+    )
 
 
 class PerformanceConfig(BaseSettings):
@@ -278,11 +275,10 @@ class PerformanceConfig(BaseSettings):
         description="Enable health check endpoint logging.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_PERFORMANCE_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_PERFORMANCE_",
+        case_sensitive=False,
+    )
 
 
 class AsyncLoggingConfig(BaseSettings):
@@ -330,11 +326,10 @@ class AsyncLoggingConfig(BaseSettings):
         le=1.0,
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_ASYNC_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_ASYNC_",
+        case_sensitive=False,
+    )
 
 
 class DevelopmentConfig(BaseSettings):
@@ -366,11 +361,10 @@ class DevelopmentConfig(BaseSettings):
         description="Enable HTTP request/response logging.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_DEV_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_DEV_",
+        case_sensitive=False,
+    )
 
 
 class LoggingConfig(BaseSettings):
@@ -452,14 +446,13 @@ class LoggingConfig(BaseSettings):
         description="Development and debugging configuration.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_LOGGING_"
-        env_nested_delimiter = "__"
-        case_sensitive = False
-        populate_by_name = True
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_prefix="LAUREN_LOGGING_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        populate_by_name=True,
+        extra="ignore",
+    )
 
 
 class StorageConfig(BaseSettings):
@@ -582,10 +575,9 @@ class Config(BaseSettings):
         description="Plugin configurations.",
     )
 
-    class Config:
-        """Pydantic configuration class."""
-
-        env_prefix = "LAUREN_"
-        env_nested_delimiter = "__"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_prefix="LAUREN_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",
+    )

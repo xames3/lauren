@@ -1,1163 +1,1116 @@
-"""\
-Plugin
-======
-
-Author: Akshay Mestry <xa@mes3.dev>
-Created on: Sunday, July 20 2025
-Last updated on: Monday, July 21 2025
-
-This module provides the foundational plugin architecture for
-L.A.U.R.E.N, enabling modular, extensible, and enterprise-grade plugin
-development. The `Plugin` class serves as an abstract base that
-developers extend to create their own specialised plugins.
-
-The plugin architecture emphasises immutability, security, and
-observability whilst maintaining developer productivity through clear
-abstractions and comprehensive lifecycle management.
-
-This design separates plugin logic from framework responsibilities,
-ensuring consistent behaviour and security across all plugins whilst
-maintaining flexibility for diverse plugin implementations and use cases.
-"""
-
 from __future__ import annotations
 
+import asyncio
 import importlib
+import importlib.util
 import os
 import pkgutil
 import sys
 import time
 import typing as t
-from abc import ABCMeta
 from abc import abstractmethod
-from dataclasses import dataclass
-from dataclasses import field
+from typing import Any
+from typing import Final
+from uuid import uuid4
 
-import pkg_resources
+try:
+    import pkg_resources as pkgs
+except ImportError:
+    pkgs = None
 
 import lauren.plugins
-from lauren.core.config import Config
+from lauren.core.base import Component
+from lauren.core.base import Context
+from lauren.core.base import Guardian
+from lauren.core.base import Inspector
+from lauren.core.base import Policy
+from lauren.core.base import Validator
+from lauren.core.events import EventCategory
+from lauren.core.events import EventSeverity
+from lauren.core.exceptions import SecurityError
 
 if t.TYPE_CHECKING:
-    from lauren.core.app import App
+    from lauren.core.app import Application
 
-__all__: list[str] = [
+__all__ = [
     "Plugin",
     "PluginContext",
     "PluginManager",
-    "PluginMeta",
-    "SecurityError",
+    "PluginValidator",
+    "PluginInspector",
+    "PluginSecurityPolicy",
 ]
 
+_PLUGIN_LOAD_TIMEOUT: Final[float] = 30.0
+_MAX_PLUGIN_MEMORY: Final[int] = 100 * 1024 * 1024  # 100MB
+_PLUGIN_SCAN_DEPTH: Final[int] = 10
 
-@dataclass(frozen=True)
-class PluginContext:
-    """Execution context for plugin operations.
 
-    This context captures the essential state information for plugin
-    operations within the framework. It provides a snapshot of the
-    plugin's runtime environment, configuration, and metadata that
-    flows through the entire plugin lifecycle whilst maintaining
-    immutability for security and consistency.
+class PluginContext(Context):
+    """Enhanced execution context for plugin operations.
 
-    The context is designed to be lightweight and serialisable, making
-    it suitable for distributed plugin execution, caching, and audit
-    trails whilst ensuring thread-safety and immutability.
-
-    .. note::
-
-        The `PluginContext` is immutable after creation, ensuring that
-        all operations on the context maintain a consistent state
-        across the plugin's lifecycle.
+    This context extends the base L.A.U.R.E.N context with plugin-specific
+    metadata whilst maintaining immutability and comprehensive tracing
+    capabilities. It captures the plugin's execution environment,
+    configuration, and operational state.
     """
 
-    name: str
-    version: str
-    context: t.Any = field(default=None)
-    config: Config | None = field(default=None)
-    metadata: dict[str, t.Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=lambda: time.time())
-    trace: str | None = field(default=None)
+    __slots__ = (
+        "_id",
+        "_version",
+        "_config",
+        "_phase",
+    )
 
-
-class PluginMeta(ABCMeta):
-    """Metaclass for `Plugin`.
-
-    This metaclass ensures consistent behaviour across all plugin
-    implementations whilst enabling dynamic customisation and
-    performance optimisation. It automatically validates plugin
-    contracts, establishes security boundaries, configures observability
-    infrastructure, and enforces immutability patterns at class creation
-    time.
-
-    This ensures that all plugin instances inherit proper framework
-    behaviour whilst maintaining flexibility for plugin-specific
-    customisation.
-    """
-
-    def __new__(
-        cls,
+    def __init__(
+        self,
         name: str,
-        bases: tuple[type, ...],
-        namespaces: dict[str, t.Any],
-    ) -> type:
-        """Create new `Plugin` class with some necessary checks."""
-        if name == "Plugin":
-            return super().__new__(cls, name, bases, namespaces)
-        subclassed = any(
-            hasattr(base, "__name__") and base.__name__ == "Plugin"
-            for base in bases
+        type_: str,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        version: str | None = None,
+        config: dict[str, Any] | None = None,
+        execution_phase: str | None = None,
+    ) -> None:
+        """Initialise plugin context.
+
+        :param name: Context name
+        :param type_: Type of context
+        :param ctx_id: Unique context identifier
+        :param user_id: User identifier
+        :param session_id: Session identifier
+        :param trace_id: Distributed tracing identifier
+        :param parent_id: Parent context identifier
+        :param metadata: Additional context metadata
+        :param version: Plugin version
+        :param config: Plugin configuration
+        :param execution_phase: Current execution phase
+        """
+        super().__init__(
+            name=name,
+            type_=type_,
+            user_id=user_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            parent_id=parent_id,
+            metadata=metadata,
         )
-        if subclassed:
-            cls._validate_properties(namespaces)
-            cls._validate_methods(namespaces)
-            cls._setup_security_boundaries(namespaces)
-            cls._setup_observability_hooks(namespaces)
-            cls._enforce_immutability(namespaces)
-        return super().__new__(cls, name, bases, namespaces)
+        self._id = str(uuid4())[:8]
+        self._version = version
+        self._config = config or {}
+        self._phase = execution_phase
 
-    @staticmethod
-    def _validate_properties(namespaces: dict[str, t.Any]) -> None:
-        """Validate that required properties are implemented.
-
-        This method ensures that plugin subclasses implement the
-        essential properties required by the framework's plugin
-        contract. All plugins must provide a unique name and version
-        for proper identification and lifecycle management.
-
-        :param namespaces: The class namespace containing properties
-            to validate.
-        :raises TypeError: If required properties are not properly
-            implemented.
-        """
-        properties = {"name", "version"}
-        for _property in properties:
-            if _property in namespaces:
-                descriptor = namespaces[_property]
-                if not isinstance(descriptor, property):
-                    raise TypeError(f"{_property!r} must be a property")
-
-    @staticmethod
-    def _validate_methods(namespaces: dict[str, t.Any]) -> None:
-        """Validate plugin lifecycle method signatures.
-
-        This method ensures that lifecycle methods follow the correct
-        signatures and conventions expected by the framework. It
-        validates that methods are callable and have appropriate
-        parameter expectations.
-
-        :param namespaces: The class namespace containing methods to
-            validate.
-        :raises TypeError: If methods are not defined or not callable.
-        """
-        methods = {"on_load", "on_configure", "on_shutdown", "on_validate"}
-        for _method in methods:
-            if _method in namespaces:
-                method = namespaces[_method]
-                if not callable(method):
-                    raise TypeError(f"{_method!r} must be a callable")
-
-    @staticmethod
-    def _setup_security_boundaries(namespaces: dict[str, t.Any]) -> None:
-        """Setup security boundaries for plugin execution.
-
-        This method establishes security constraints and validation
-        hooks that ensure plugins operate within secure boundaries. It
-        configures default security policies and validation mechanisms
-        that are applied to all plugin operations.
-
-        :param namespaces: The class namespace to configure with
-            security boundaries.
-        """
-        if "_security_policies" not in namespaces:
-            namespaces["_security_policies"] = []
-        if "_validation_hooks" not in namespaces:
-            namespaces["_validation_hooks"] = []
-
-    @staticmethod
-    def _setup_observability_hooks(namespaces: dict[str, t.Any]) -> None:
-        """Configure observability hooks for the plugin.
-
-        This method sets up observability hooks, metrics collection,
-        and audit trail capabilities that enable comprehensive
-        monitoring and troubleshooting of plugin operations.
-
-        :param namespaces: The class namespace to configure with
-            observability hooks.
-        """
-        if "_observability_hooks" not in namespaces:
-            namespaces["_observability_hooks"] = {
-                "metrics_enabled": True,
-                "tracing_enabled": True,
-                "audit_enabled": True,
-            }
-
-    @staticmethod
-    def _enforce_immutability(namespaces: dict[str, t.Any]) -> None:
-        """Enforce immutability for plugin instances.
-
-        This method configures immutability enforcement that prevents
-        unauthorised modification of plugin state after initialisation.
-        It ensures plugin instances maintain consistent state throughout
-        their lifecycle.
-
-        :param namespaces: The class namespace to configure with
-            immutability enforcement.
-        """
-        if "_immutability_post_init" not in namespaces:
-            namespaces["_immutability_post_init"] = True
-
-
-class Plugin(metaclass=PluginMeta):
-    """Foundational class for creating secure, observable plugins.
-
-    This class serves as the abstract foundation for all L.A.U.R.E.N
-    plugins, providing enterprise-grade capabilities including security
-    validation, lifecycle management, observability hooks, and
-    immutability enforcement. It manages the complete plugin lifecycle
-    with built-in audit trails, performance monitoring, and security
-    boundaries.
-
-    The plugin architecture implements strict immutability patterns for
-    security and consistency whilst maintaining flexibility for diverse
-    plugin implementations. All operations flow through this class,
-    providing centralised control, comprehensive observability, and
-    security validation for enterprise deployments.
-
-    Developers should subclass `Plugin` and implement the required
-    abstract properties whilst optionally overriding lifecycle methods
-    to define their plugin's specific behaviour. The framework
-    automatically handles infrastructure concerns, allowing developers
-    to focus on plugin logic.
-
-    .. note::
-
-        All plugin instances are immutable after initialisation and
-        operate within strict security boundaries enforced by the
-        framework's security infrastructure.
-    """
-
-    def __init__(self, config: Config | None = None) -> None:
-        """Initialise the plugin with configuration and security setup."""
-        self._config = config
-        self._audit: list[dict[str, t.Any]] = []
-        self._security_policies: list[t.Callable[[t.Any], bool]] = []
-        self._validation_hooks: list[t.Callable[[], bool]] = []
-        self._context: PluginContext | None = None
-        self._metrics: dict[str, t.Any] = {
-            "load_time": 0.0,
-            "configure_time": 0.0,
-            "execution_count": 0,
-            "last_execution": None,
-        }
-        self._observers: list[t.Callable[[str, t.Any], None]] = []
-        self._setup_default_policies()
-        self._initialised = True
-
-    def __repr__(self) -> str:
-        """Return a string representation of the plugin."""
-        try:
-            return (
-                f"<{type(self).__name__}(name={self.name!r}, "
-                f"version={self.version!r})>"
-            )
-        except NotImplementedError:
-            return f"<{type(self).__name__}(incomplete)>"
-
-    def __setattr__(self, name: str, value: t.Any) -> None:
-        """Prevent direct attribute modification after initialisation.
-
-        This method enforces immutability by preventing direct
-        modification of plugin attributes after initialisation. It
-        allows only private attributes to be modified directly whilst
-        requiring controlled modification through appropriate methods.
-
-        :param name: The name of the attribute to set.
-        :param value: The value to set for the attribute.
-        :raises AttributeError: If attempting to modify a public
-            attribute after initialisation.
-        """
-        if hasattr(self, "_initialised") and self._initialised:
-            if not name.startswith("_"):
-                super().__setattr__(name, value)
-            else:
-                raise AttributeError(
-                    f"Cannot modify private attribute {name!r} directly."
-                    " Use appropriate methods"
-                )
-        else:
-            super().__setattr__(name, value)
-
-    def _setup_default_policies(self) -> None:
-        """Setup default security policies for the plugin."""
-
-        def validate_plugin_contract() -> bool:
-            """Validate that basic contract requirements are met."""
-            try:
-                return bool(self.name and self.version)
-            except (NotImplementedError, AttributeError):
-                return False
-
-        self._validation_hooks.append(validate_plugin_contract)
-
-    def _validate_plugin(self) -> bool:
-        """Validate plugin security using registered policies.
-
-        This method applies all registered security policies and
-        validation hooks to ensure the plugin operates within security
-        boundaries. It returns `True` if all validations pass, or
-        `False` if any validation fails.
-
-        :return: `True` if the plugin passes all security validations,
-            `False` otherwise.
-        """
-        try:
-            policies = [policy(self) for policy in self._security_policies]
-            hooks = [hook() for hook in self._validation_hooks]
-            return all(policies + hooks)
-        except Exception:
-            return False
-
-    def _record_event(self, event: str, **kwargs: t.Any) -> None:
-        """Record an audit event for compliance and security monitoring.
-
-        This method captures audit events with timestamps and relevant
-        metadata for security monitoring, compliance reporting, and
-        troubleshooting purposes.
-
-        :param event: The type of audit event being recorded.
-        """
-        record = {
-            "type": event,
-            "name": getattr(self, "name", "0.0.0"),
-            "version": getattr(self, "version", "0.0.0"),
-            **kwargs,
-            "timestamp": time.time(),
-        }
-        self._audit.append(record)
+    def __introspect__(self) -> t.Iterator[tuple[str, Any]]:
+        """Show plugin context information."""
+        yield from super().__introspect__()
+        if self._id:
+            yield "plugin", self._id
+        if self._version:
+            yield "version", self._version
+        if self._execution_phase:
+            yield "phase", self._execution_phase
 
     @property
-    @abstractmethod
-    def name(self) -> str:
-        """Name of the plugin.
-
-        This property must return a unique identifier for the plugin
-        that distinguishes it from all other plugins in the system.
-        The name should be stable across plugin versions and should
-        follow naming conventions for consistency.
-
-        :return: A unique string identifier for the plugin.
-        """
-        raise NotImplementedError("Must implement the 'name' property")
+    def id(self) -> str | None:
+        """Get plugin ID."""
+        return self._id
 
     @property
-    @abstractmethod
-    def version(self) -> str:
-        """Version of the plugin.
-
-        This property must return a version string. The version is used
-        for dependency resolution, compatibility checking, and plugin
-        lifecycle management.
-
-        :return: A version string for the plugin.
-        """
-        raise NotImplementedError("Must implement the 'version' property")
+    def version(self) -> str | None:
+        """Get plugin version."""
+        return self._version
 
     @property
-    def config(self) -> Config | None:
-        """Access the configuration object."""
+    def config(self) -> dict[str, Any]:
+        """Access plugin configuration."""
         return self._config
 
     @property
-    def context(self) -> PluginContext | None:
-        """Access the execution context."""
-        return self._context
+    def execution_phase(self) -> str | None:
+        """Get execution phase."""
+        return self._execution_phase
 
-    @property
-    def metrics(self) -> dict[str, t.Any]:
-        """Access current metrics snapshot."""
-        return self._metrics.copy()
 
-    @property
-    def audit(self) -> list[dict[str, t.Any]]:
-        """Access the audit trail for security and compliance."""
-        return self._audit.copy()
+class PluginValidator(Validator):
+    """Comprehensive validator for plugin contract compliance."""
 
-    def add_observer(self, observer: t.Callable[[str, t.Any], None]) -> None:
-        """Add an observer for plugin lifecycle events.
-
-        This method allows external components to react to plugin
-        lifecycle events, such as loading, configuration, or execution.
-        Observers can perform additional actions based on plugin state
-        changes.
-
-        :param observer: A callable that takes event name and data as
-            arguments.
-        :raises TypeError: If the observer is not callable.
-        """
-        if not callable(observer):
-            raise TypeError(f"{observer!r} must be a callable")
-        self._observers.append(observer)
-
-    def notify_observers(self, event: str, data: t.Any) -> None:
-        """Notify observers of plugin events.
-
-        This method calls all registered observers with the event name
-        and associated data, allowing them to react to plugin lifecycle
-        events.
-
-        :param event: The name of the event that occurred.
-        :param data: The data associated with the event.
-        """
-        for observer in self._observers:
-            try:
-                observer(event, data)
-            except Exception:
-                pass
-
-    def add_security_policy(self, policy: t.Callable[[t.Any], bool]) -> None:
-        """Add a security policy validator.
-
-        This method allows registration of custom security policies
-        that are applied during plugin operations. Policies should
-        return `True` if the operation is permitted, or `False` if it
-        should be rejected.
-
-        :param policy: A callable that validates plugin operations.
-        :raises TypeError: If the policy is not callable.
-        """
-        if not callable(policy):
-            raise TypeError(f"{policy!r} must be a callable")
-        self._security_policies.append(policy)
-
-    def on_load(self, context: t.Any) -> None:
-        """Method invoked when the plugin is loaded into the framework.
-
-        This lifecycle method is invoked when the plugin is being loaded
-        by the plugin manager. It provides an opportunity for the plugin
-        to perform initialisation tasks, validate its environment, and
-        prepare for operation.
-
-        :param context: The execution context for the loading operation.
-        """
-        started = time.time()
-        if not self._validate_plugin():
-            raise SecurityError(
-                f"Plugin: {self.name!r} failed security validation"
-            )
-        self._context = PluginContext(
-            name=self.name,
-            version=self.version,
-            context=context,
-            timestamp=started,
+    def __init__(self, strict: bool = True) -> None:
+        super().__init__(
+            name="plugin_validator",
+            description="Validates plugin contract implementation and security requirements",
+            strict=strict,
         )
-        load_time = time.time() - started
-        self._metrics["load_time"] = load_time
-        self._record_event("plugin_loaded", load_time=load_time)
-        self.notify_observers("load", {"context": context})
 
-    def on_configure(self, config: Config) -> None:
-        """Method invoked when the application is configuring the plugin.
+    async def __call__(
+        self,
+        target: Any,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        """Validate plugin implementation against L.A.U.R.E.N contracts.
 
-        This lifecycle method is invoked during the configuration phase,
-        allowing the plugin to access framework config and adjust its
-        behaviour accordingly. The plugin should validate configuration
-        values and prepare its internal state.
-
-        :param config: The framework configuration object containing
-            settings that may affect plugin behaviour.
+        :param target: Plugin instance to validate
+        :param context: Optional execution context
+        :return: True if plugin meets all requirements
         """
-        started = time.time()
-        self._config = config
-        if self._context:
-            self._context = PluginContext(
-                name=self._context.name,
-                version=self._context.version,
-                context=self._context.context,
-                config=config,
-                metadata=self._context.metadata,
-                timestamp=self._context.timestamp,
-                trace=self._context.trace,
+        if not (hasattr(target, "id") and target.id):
+            return False
+        if not (hasattr(target, "name") and target.name):
+            return False
+        if not (hasattr(target, "version") and target.version):
+            return False
+        # Validate lifecycle methods exist
+        methods = ["execute", "process", "cleanup"]
+        for method in methods:
+            if not hasattr(target, method) or not callable(
+                getattr(target, method)
+            ):
+                return False
+        # In strict mode, validate additional security requirements
+        if self.strict:
+            # Check for proper component inheritance
+            if not isinstance(target, Component):
+                return False
+            # In strict mode, config should be a dict if present
+            if hasattr(target, "config") and not isinstance(
+                target.config, dict
+            ):
+                return False
+        return True
+
+
+class PluginInspector(Inspector):
+    """Inspector for comprehensive plugin lifecycle monitoring."""
+
+    __slots__ = ("_manager",)
+
+    def __init__(self, manager: "PluginManager") -> None:
+        super().__init__(
+            name="plugin_inspector",
+            events={
+                "plugin_loaded",
+                "plugin_activated",
+                "plugin_deactivated",
+                "plugin_error",
+                "plugin_execution_started",
+                "plugin_execution_completed",
+            },
+        )
+        self._manager = manager
+
+    @property
+    def manager(self) -> "PluginManager":
+        """Get plugin manager."""
+        return self._manager
+
+    async def __call__(
+        self,
+        event: str,
+        subject: Any,
+        data: dict[str, Any],
+    ) -> None:
+        """React to plugin lifecycle events with comprehensive logging.
+
+        :param event: Name of the event
+        :param subject: Plugin that triggered the event
+        :param data: Additional event information
+        """
+        # Get application logger if available
+        app = getattr(self.manager, "_app", None)
+        logger = getattr(app, "_logger", None) if app else None
+        if logger:
+            logger.info(
+                f"Plugin event: {event}",
+                extra={
+                    "id": getattr(subject, "id", "unknown"),
+                    "data": data,
+                    "timestamp": time.time(),
+                },
             )
-        configure_time = time.time() - started
-        self._metrics["configure_time"] = configure_time
-        self._record_event("plugin_configured", configure_time=configure_time)
-        self.notify_observers("configure", {"config": config})
+        # Record in plugin manager's audit trail
+        self.manager.audit.record_event(
+            event,
+            component=f"plugin:{getattr(subject, 'id', 'unknown')}",
+            **data,
+        )
 
-    def on_shutdown(self) -> None:
-        """Method invoked when the application is shutting down.
 
-        This lifecycle method is invoked during application shutdown,
-        allowing the plugin to perform cleanup tasks, release resources,
-        and ensure graceful termination of any ongoing operations.
+class PluginSecurityPolicy(Policy):
+    """Comprehensive security policy for plugin operations."""
+
+    def __init__(
+        self,
+        strict: bool = True,
+    ) -> None:
+        operations = {
+            "discover",
+            "load",
+            "initialise",
+            "activate",
+            "execute",
+            "deactivate",
+            "cleanup",
+            "configure",
+        }
+
+        super().__init__(
+            name="plugin_security",
+            operations=operations,
+            level="strict" if strict else "permissive",
+        )
+
+    async def __call__(
+        self,
+        subject: t.Any,
+        operation: str | None = None,
+        *,
+        context: t.Dict[str, t.Any] | None = None,
+    ) -> bool:
+        """Evaluate plugin operation permissions with security checks.
+
+        :param subject: Plugin requesting the operation
+        :param operation: Operation being attempted
+        :param context: Optional execution context
+        :return: True if operation is permitted
         """
-        self._record_event("plugin_shutdown")
-        self.notify_observers("shutdown", {})
-
-    def on_validate(self) -> bool:
-        """Method invoked to validate the plugin's current state.
-
-        This lifecycle method allows the plugin to perform
-        self-validation checks and report whether it is in a valid state
-        for operation. This is useful for health checks and diagnostic
-        purposes.
-
-        :return: `True` if the plugin is in a valid state, `False`
-            otherwise.
-        """
-        return self._validate_plugin()
-
-
-class SecurityError(Exception):
-    """Exception raised when plugin security validation fails."""
-
-    pass
+        if not operation:
+            return True
+        # Check if operation is in allowed set
+        if operation not in self.operations:
+            return False
+        # Additional security checks for critical operations
+        if operation in {"load", "initialise"} and hasattr(subject, "id"):
+            # Validate plugin ID format (basic security check)
+            id = getattr(subject, "id", "")
+            if not id or not isinstance(id, str) or len(id) < 3:
+                return False
+        # In strict mode, require proper component inheritance
+        if self.level == "strict":
+            if not isinstance(subject, Component):
+                return False
+        return True
 
 
-class PluginManager:
-    """Class to manage plugins.
+class Plugin(Component):
+    """Abstract base class for L.A.U.R.E.N plugins with enterprise capabilities.
 
-    This manager provides enterprise-grade plugin management with lazy
-    loading, security validation, dependency resolution, and
-    comprehensive observability. It maintains plugin isolation whilst
-    enabling efficient resource utilisation through on-demand loading
-    strategies.
+    This class provides the foundation for building secure, observable plugins
+    with comprehensive lifecycle management, security enforcement, and detailed
+    audit trails. Every plugin inherits L.A.U.R.E.N's core capabilities while
+    maintaining clear separation between framework infrastructure and plugin logic.
 
-    The manager integrates deeply with framework's security and
-    observability infrastructure, providing audit trails, performance
-    metrics, and security scanning for all plugin operations. It
-    supports hot-reload capabilities for development environments whilst
-    maintaining strict security controls for production deployments.
-
-    The manager is designed to be extensible, allowing developers to
-    register custom plugins, security validators, and load observers
-    that integrate seamlessly with the framework's lifecycle. It
-    automatically discovers plugins from the filesystem, supports lazy
-    loading patterns, and provides a consistent interface for plugin
-    registration and management.
-
-    :param app: The core application instance to manage plugins for.
+    The plugin architecture follows L.A.U.R.E.N principles:
+    - Security-first design with mandatory validation
+    - Comprehensive observability and metrics collection
+    - Immutable configuration with controlled state management
+    - Clear contracts with explicit interfaces
+    - Enterprise-grade error handling and recovery
     """
 
-    def __init__(self, app: App) -> None:
-        self._app = app
-        self._class: dict[str, str] = {}
-        self._plugins: dict[str, Plugin] = {}
-        self._builtins: set[str] = set()
-        self._installed: set[str] = set()
-        self._lazy: dict[str, t.Callable[[], Plugin]] = {}
-        self._metadata: dict[str, dict[str, t.Any]] = {}
-        self._validators: list[t.Callable[[Plugin], bool]] = []
-        self._observers: list[t.Callable[[str, Plugin], None]] = []
-        self._discovered: bool = False
+    __slots__ = (
+        "id",
+        "name",
+        "version",
+        "description",
+        "config",
+        "type",
+        "_plugin_context",
+        "_execution_count",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        version: str,
+        description: str | None = None,
+        config: dict[str, t.Any] | None = None,
+        **kwargs: t.Any,
+    ) -> None:
+        """Initialise L.A.U.R.E.N plugin with comprehensive framework integration.
+
+        :param _id: Unique identifier for the plugin
+        :param _name: Human-readable plugin name
+        :param version: Plugin version string
+        :param description: Optional plugin description
+        :param config: Plugin-specific configuration
+        :param kwargs: Additional component configuration
+        """
+        # Set plugin-specific attributes first
+        self.id = str(uuid4())[:8]  # Generate a short unique ID
+        self.name = name
+        self.version = version
+        self.description = description or f"{name} Plugin"
+        self.config = config or {}
+        self._execution_count = 0
+        self.type = kwargs.pop("type", "generic")
+        # Plugin context
+        self._plugin_context = PluginContext(
+            name=f"plugin_{self.id}",
+            type_="plugin_execution",
+            version=version,
+            config=self.config,
+            execution_phase="initialised",
+        )
+        # Initialise component with L.A.U.R.E.N framework
+        super().__init__(
+            name=name,
+            type_="plugin",
+            config=config or {},
+            validators=[PluginValidator()],
+            policies=[PluginSecurityPolicy()],
+            guardian=Guardian(
+                disallow_post_init=True,
+                private_access=True,
+                strict=False,
+            ),
+            **kwargs,
+        )
+        # Record plugin creation
+        self.audit.record_event(
+            "plugin_created",
+            component=self.name,
+            category=EventCategory.OPERATION,
+            severity=EventSeverity.INFO,
+            plugin_id=self.id,
+            version=version,
+            description=description,
+        )
+
+    def __introspect__(self) -> t.Iterator[tuple[str, t.Any]]:
+        """Show plugin-specific introspection data."""
+        yield from super().__introspect__()
+        yield "id", self.id
+        yield "version", self.version
+        yield "executions", self._execution_count
+
+    def __eq__(self, other: object) -> bool:
+        """Compare plugins based on name and version."""
+        if not isinstance(other, Plugin):
+            return NotImplemented
+        return self.name == other.name and self.version == other.version
+
+    def __hash__(self) -> int:
+        """Hash based on name and version for set/dict usage."""
+        return hash((self.name, self.version))
+
+    async def load(self) -> None:
+        """Load plugin with validation and security checks."""
+        # Check security policies
+        if not await self.check_policies("load"):
+            raise SecurityError(
+                f"Plugin {self.id} load denied by security policy"
+            )
+        # Validate plugin
+        if not await self.validate():
+            raise ValueError(f"Plugin {self.id} validation failed")
+        # Update context
+        object.__setattr__(
+            self,
+            "_plugin_context",
+            self._plugin_context.extend(execution_phase="loading"),
+        )
+        # Notify inspectors
+        await self.notify_inspectors(
+            "plugin_loaded",
+            {"id": self.id, "version": self.version},
+        )
+        self.audit.record_event(
+            "plugin_loaded",
+            component=self.name,
+            category=EventCategory.OPERATION,
+            severity=EventSeverity.INFO,
+        )
+
+    async def activate(self) -> None:
+        """Activate plugin for execution."""
+        if not await self.check_policies("activate"):
+            raise SecurityError(f"Plugin {self.id} activation denied")
+        # Update context
+        object.__setattr__(
+            self,
+            "_plugin_context",
+            self._plugin_context.extend(execution_phase="active"),
+        )
+        # Call plugin-specific activation
+        await self.on_activate()
+        # Notify inspectors
+        await self.notify_inspectors("plugin_activated", {"id": self.id})
+        self.audit.record_event(
+            "plugin_activated",
+            component=self.name,
+            category=EventCategory.OPERATION,
+            severity=EventSeverity.INFO,
+        )
+
+    async def execute(
+        self,
+        data: t.Any,
+        *,
+        context: dict[str, t.Any] | None = None,
+    ) -> t.Any:
+        """Execute plugin with comprehensive monitoring and error handling.
+
+        :param data: Data to process
+        :param context: Optional execution context
+        :return: Processed output
+        """
+        if not await self.check_policies("execute"):
+            raise SecurityError(f"Plugin {self.id} execution denied")
+        started_at = time.time()
+        self._execution_count += 1
+        try:
+            # Update execution context
+            context = self._plugin_context.extend(
+                execution_phase="executing",
+                execution_count=self._execution_count,
+                input_type=type(data).__name__,
+            )
+            object.__setattr__(self, "_plugin_context", context)
+            # Notify execution started
+            await self.notify_inspectors(
+                "plugin_execution_started",
+                {
+                    "id": self.id,
+                    "execution_count": self._execution_count,
+                    "input_type": type(data).__name__,
+                },
+            )
+            # Execute plugin logic
+            result = await self.process(data, context=context)
+            # Record successful execution
+            duration = time.time() - started_at
+            self.metrics.record_operation(duration, success=True)
+            # Notify execution completed
+            await self.notify_inspectors(
+                "plugin_execution_completed",
+                {
+                    "id": self.id,
+                    "execution_count": self._execution_count,
+                    "duration": duration,
+                    "success": True,
+                },
+            )
+            self.audit.record_event(
+                "plugin_executed",
+                component=self.name,
+                category=EventCategory.OPERATION,
+                severity=EventSeverity.INFO,
+                duration=duration,
+                success=True,
+            )
+            return result
+        except Exception as error:
+            duration = time.time() - started_at
+            self.metrics.record_operation(duration, success=False)
+            # Notify error occurred
+            await self.notify_inspectors(
+                "plugin_error",
+                {
+                    "id": self.id,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                    "duration": duration,
+                },
+            )
+            self.audit.record_event(
+                "plugin_error",
+                component=self.name,
+                category=EventCategory.ERROR,
+                severity=EventSeverity.ERROR,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                duration=duration,
+            )
+            raise
+
+    @abstractmethod
+    async def process(
+        self,
+        data: t.Any,
+        *,
+        context: dict[str, t.Any] | None = None,
+    ) -> t.Any:
+        """Process input data (to be implemented by subclasses).
+
+        :param data: Data to process
+        :param context: Optional execution context
+        :return: Processed output
+        """
+        raise NotImplementedError("Subclasses must implement process() method")
+
+    async def deactivate(self) -> None:
+        """Deactivate plugin."""
+        if not await self.check_policies("deactivate"):
+            raise SecurityError(f"Plugin {self.id} deactivation denied")
+        # Update context
+        object.__setattr__(
+            self,
+            "_plugin_context",
+            self._plugin_context.extend(execution_phase="deactivating"),
+        )
+        # Call plugin-specific deactivation
+        await self.on_deactivate()
+        # Notify inspectors
+        await self.notify_inspectors("plugin_deactivated", {"id": self.id})
+        self.audit.record_event(
+            "plugin_deactivated",
+            component=self.name,
+            category=EventCategory.OPERATION,
+            severity=EventSeverity.INFO,
+        )
+
+    # Lifecycle hooks for subclasses to override
+    async def on_activate(self) -> None:
+        """Called when plugin is activated (override in subclasses)."""
+        pass
+
+    async def on_deactivate(self) -> None:
+        """Called when plugin is deactivated (override in subclasses)."""
+        pass
 
     @property
-    def app(self) -> "App":
-        """Access the core application instance."""
-        return self._app
+    def context(self) -> PluginContext:
+        """Get current plugin execution context."""
+        return self._plugin_context
 
-    def add_validator(self, validator: t.Callable[[Plugin], bool]) -> None:
-        """Add a security validator for plugin loading.
 
-        This allows custom security checks to be applied to plugins
-        before they are loaded into the application. `Validators` should
-        return `True` if the plugin is safe to load, or `False` if it
-        should be rejected.
+class PluginManager(Component):
+    """Enterprise plugin management with L.A.U.R.E.N architecture.
 
-        :param validator: A callable that takes a `Plugin` instance and
-            returns a boolean indicating whether the plugin is safe to
-            load.
+    This manager provides comprehensive plugin lifecycle management with
+    security enforcement, observability, and performance monitoring.
+    It orchestrates plugin discovery, loading, execution, and cleanup
+    whilst maintaining enterprise-grade audit trails and security boundaries.
+    """
+
+    __slots__ = (
+        "_app",
+        "_config",
+        "_plugins",
+        "_active_plugins",
+        "_discovery_paths",
+    )
+
+    def __init__(self, application: "Application") -> None:
+        """Initialise plugin manager with application context.
+
+        :param application: Parent application instance
         """
-        self._validators.append(validator)
-
-    def add_observer(self, observer: t.Callable[[str, Plugin], None]) -> None:
-        """Add an observer for plugin loading events.
-
-        This allows external components to react to plugin loading
-        events, such as logging, auditing, or triggering additional
-        workflows. Observers can perform additional actions based on
-        plugin loading.
-
-        :param observer: A callable that takes the plugin name and
-            plugin instance as arguments.
-        """
-        self._observers.append(observer)
-
-    def validate(self, plugin: Plugin) -> bool:
-        """Validate plugin security using registered validators.
-
-        This method applies all registered security validators to the
-        plugin and returns `True` if all validators pass, or `False` if
-        any validator fails. This ensures that only safe plugins are
-        loaded into the application.
-
-        :param plugin: The plugin instance to validate.
-        :return: `True` if the plugin passes all security checks,
-            `False` otherwise.
-        """
-        return all(validator(plugin) for validator in self._validators)
-
-    def notify_observers(self, name: str, plugin: Plugin) -> None:
-        """Notify observers of plugin loading.
-
-        This method calls all registered observers with the plugin name
-        and plugin instance, allowing them to react to plugin loading
-        events. Observers can perform additional actions such as
-        logging, auditing, or triggering additional workflows based on
-        plugin loading.
-
-        :param name: The name of the plugin being loaded.
-        :param plugin: The plugin instance being loaded.
-        """
-        for observer in self._observers:
-            try:
-                observer(name, plugin)
-            except Exception:
-                pass
-
-    def discover_plugins(self) -> dict[str, Plugin]:
-        """Discover all available plugins.
-
-        This method scans the plugin directory for all available
-        plugins, dynamically importing them and registering them in the
-        plugin manager. Discovery only runs once and is cached to avoid
-        repeated filesystem operations.
-
-        :return: A dictionary mapping plugin names to their instances.
-        """
-        if self._discovered:
-            return {name: self._lazy[name]() for name in self._lazy}
-        plugins: dict[str, list[Plugin, str]] = {}
-        self._app.logger.debug("Discovering built-in plugins...")
-        for package in pkgutil.iter_modules(
-            lauren.plugins.__path__,
-            f"{lauren.plugins.__name__}.",
-        ):
-            try:
-                module = importlib.import_module(package.name)
-                self.discover_plugins_from_lauren(module, plugins)
-            except Exception as exc:
-                self._app.logger.error(
-                    f"Failed to discover built-in plugin: {package.name!r}",
-                    exc_info=exc,
-                )
-        self.discover_plugins_from_entrypoints(plugins)
-        self.discover_plugins_from_custom_sources(plugins)
-        self.discover_plugins_from_namespace_packages(plugins)
-        self._discovered = True
-        self._app.logger.debug(
-            f"Plugin discovery complete. Found {len(plugins)} plugins "
-            f"({len(self._builtins)} built-ins and "
-            f"{len(self._installed)} installed)"
+        super().__init__(
+            name="PluginManager",
+            type_="infrastructure",
+            config={"auto_discovery": True, "strict_validation": True},
+            inspectors=[PluginInspector(self)],
+            policies=[PluginSecurityPolicy(strict=True)],
         )
+        self._app = application
+        self._plugins: dict[str, Plugin] = {}
+        self._active_plugins: set[str] = set()
+        self._config = getattr(application.config, "plugins", {})
+        # Set up discovery paths
+        self._discovery_paths = [lauren.plugins.__path__[0]]
+        # Add custom paths from environment variable
+        paths = os.environ.get("LAUREN_PLUGIN_PATH", "")
+        if paths:
+            for path in paths.split(os.pathsep):
+                if path and os.path.exists(path):
+                    self._discovery_paths.append(path)
+        # Add paths from configuration
+        paths = getattr(application.config, "plugin_paths", [])
+        self._discovery_paths.extend(paths)
+
+    def __introspect__(self) -> t.Iterator[tuple[str, t.Any]]:
+        """Show plugin manager state."""
+        yield from super().__introspect__()
+        yield "total_plugins", len(self._plugins)
+        yield "active_plugins", len(self._active_plugins)
+
+    async def initialise(self) -> None:
+        """Initialise plugin system with discovery and loading."""
+        await self.discover_plugins()
+        await self.load_plugins()
+
+    async def discover_plugins(self) -> None:
+        """Discover available plugins from multiple sources."""
+        if not await self.check_policies("discover"):
+            raise SecurityError("Plugin discovery denied by security policy")
+        discovered = 0
+        # 1. Discover from configured paths (built-in and custom directories)
+        discovered += await self._discover_from_paths()
+        # 2. Discover from entry points
+        discovered += await self._discover_from_entry_points()
+        await self.notify_inspectors(
+            "plugins_discovered",
+            {"count": discovered, "paths": self._discovery_paths},
+        )
+
+    async def _discover_from_paths(self) -> int:
+        """Discover plugins from filesystem paths with depth protection."""
+        discovered = 0
+        for path in self._discovery_paths:
+            if os.path.exists(path):
+                discovered += await self._scan_directory(path, 0)
+        return discovered
+
+    async def _scan_directory(self, path: str, current_depth: int) -> int:
+        """Recursively scan directory with depth limit protection."""
+        if current_depth >= _PLUGIN_SCAN_DEPTH:
+            self.audit.record_event(
+                "plugin_scan_depth_exceeded",
+                component=self.name,
+                category=EventCategory.PERFORMANCE,
+                severity=EventSeverity.WARNING,
+                path=path,
+                max_depth=_PLUGIN_SCAN_DEPTH,
+                current_depth=current_depth,
+            )
+            return 0
+        discovered = 0
+        try:
+            for _, name, ispkg in pkgutil.iter_modules([path]):
+                if ispkg:
+                    discovered += 1
+                    self.audit.record_event(
+                        "plugin_discovered",
+                        component=self.name,
+                        category=EventCategory.OPERATION,
+                        severity=EventSeverity.INFO,
+                        plugin_name=name,
+                        discovery_path=path,
+                        plugin_source="filesystem",
+                        scan_depth=current_depth,
+                    )
+                    # Optionally scan subdirectories (if needed)
+                    sub_path = os.path.join(path, name)
+                    if (
+                        os.path.isdir(sub_path)
+                        and current_depth < _PLUGIN_SCAN_DEPTH - 1
+                    ):
+                        discovered += await self._scan_directory(
+                            sub_path, current_depth + 1
+                        )
+        except Exception as error:
+            self.audit.record_event(
+                "plugin_discovery_scan_error",
+                component=self.name,
+                path=path,
+                error=str(error),
+                scan_depth=current_depth,
+            )
+        return discovered
+
+    async def _discover_from_entry_points(self) -> int:
+        """Discover plugins from setuptools entry points."""
+        discovered = 0
+        if pkgs is None:
+            return discovered
+        try:
+            # Look for plugins in the 'lauren.plugins' entry point group
+            for entry_point in pkgs.iter_entry_points("lauren.plugins"):
+                discovered += 1
+                self.audit.record_event(
+                    "plugin_discovered",
+                    component=self.name,
+                    category=EventCategory.OPERATION,
+                    severity=EventSeverity.INFO,
+                    plugin_name=entry_point.name,
+                    plugin_class=f"{entry_point.module_name}:{entry_point.attrs[0]}",
+                    plugin_source="entry_point",
+                )
+        except Exception as error:
+            self.audit.record_event(
+                "plugin_discovery_error",
+                component=self.name,
+                error=str(error),
+                plugin_source="entry_point",
+            )
+        return discovered
+
+    async def load_plugins(self) -> None:
+        """Load discovered plugins with validation and resource monitoring."""
+        if not await self.check_policies("load"):
+            raise SecurityError("Plugin loading denied by security policy")
+        loaded = 0
+        initial_usage = self._check_memory_usage()
+        # 1. Load plugins from filesystem paths
+        loaded += await self._load_from_paths()
+        # 2. Load plugins from entry points
+        loaded += await self._load_from_entry_points()
+        # Check final memory state
+        memory_usage = self._check_memory_usage()
+        self.audit.record_event(
+            "plugins_loaded",
+            component=self.name,
+            category=EventCategory.OPERATION,
+            severity=EventSeverity.INFO,
+            loaded_count=loaded,
+            total_plugins=len(self._plugins),
+            initial_memory_usage=initial_usage.get("total_plugin_memory", 0),
+            final_memory_usage=memory_usage.get("total_plugin_memory", 0),
+            memory_within_limits=memory_usage.get("within_limits", True),
+        )
+
+    async def _load_from_paths(self) -> int:
+        """Load plugins from filesystem paths with timeout protection."""
+        loaded = 0
+        for path in self._discovery_paths:
+            if not os.path.exists(path):
+                continue
+            for finder, name, ispkg in pkgutil.iter_modules([path]):
+                if not ispkg:
+                    continue
+                try:
+                    # Load plugin with timeout protection
+                    loaded += await asyncio.wait_for(
+                        self._load_single_plugin_from_path(finder, name, path),
+                        timeout=_PLUGIN_LOAD_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    self.audit.record_event(
+                        "plugin_load_timeout",
+                        component=self.name,
+                        module_name=name,
+                        timeout=_PLUGIN_LOAD_TIMEOUT,
+                        plugin_source="filesystem",
+                        path=path,
+                    )
+                except Exception as error:
+                    self.audit.record_event(
+                        "module_load_error",
+                        component=self.name,
+                        module_name=name,
+                        error=str(error),
+                        plugin_source="filesystem",
+                        path=path,
+                    )
+        return loaded
+
+    async def _load_single_plugin_from_path(
+        self,
+        finder: t.Any,
+        name: str,
+        path: str,
+    ) -> int:
+        """Load a single plugin from filesystem path."""
+        loaded = 0
+        _name = name
+        if path != lauren.plugins.__path__[0]:
+            # For custom paths, create unique module names
+            _name = f"lauren_custom_plugins.{name}"
+        spec = finder.find_spec(name)
+        if spec is None:
+            return 0
+        module = importlib.util.module_from_spec(spec)
+        if module is None:
+            return 0
+        # Add to sys.modules with our custom name
+        sys.modules[_name] = module
+        spec.loader.exec_module(module)
+        # Look for Plugin classes in the module
+        plugins = self._find_plugin_classes(module)
+        for _plugin in plugins:
+            try:
+                # Try new-style instantiation first (constructor-based)
+                try:
+                    # For new plugins that require name and version in constructor
+                    name = (
+                        _plugin.__name__.lower()
+                        .replace("plugin", "")
+                        .replace("lauren", "")
+                        .strip("_")
+                    )
+                    plugin = _plugin(
+                        name=name,
+                        version=getattr(_plugin, "__version__", "1.0.0"),
+                    )
+                except TypeError:
+                    plugin = _plugin()
+                # Validate the plugin
+                if await self._validate_plugin(plugin):
+                    self._plugins[plugin.name] = plugin
+                    loaded += 1
+                    self.audit.record_event(
+                        "plugin_loaded",
+                        component=self.name,
+                        plugin_name=plugin.name,
+                        plugin_id=plugin.id,
+                        plugin_version=plugin.version,
+                        plugin_source="filesystem",
+                        path=path,
+                    )
+            except Exception as error:
+                self.audit.record_event(
+                    "plugin_load_error",
+                    component=self.name,
+                    _plugin=_plugin.__name__,
+                    error=str(error),
+                    plugin_source="filesystem",
+                    path=path,
+                )
+
+        return loaded
+
+    async def _load_from_entry_points(self) -> int:
+        """Load plugins from setuptools entry points with timeout protection."""
+        loaded = 0
+        if pkgs is None:
+            return loaded
+        try:
+            for entry_point in pkgs.iter_entry_points("lauren.plugins"):
+                try:
+                    # Load plugin with timeout protection
+                    loaded += await asyncio.wait_for(
+                        self._load_single_plugin_from_entry_point(entry_point),
+                        timeout=_PLUGIN_LOAD_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    self.audit.record_event(
+                        "plugin_load_timeout",
+                        component=self.name,
+                        plugin_name=entry_point.name,
+                        timeout=_PLUGIN_LOAD_TIMEOUT,
+                        plugin_source="entry_point",
+                    )
+                except Exception as error:
+                    self.audit.record_event(
+                        "plugin_load_error",
+                        component=self.name,
+                        plugin_name=entry_point.name,
+                        error=str(error),
+                        plugin_source="entry_point",
+                    )
+        except Exception as error:
+            self.audit.record_event(
+                "entry_point_discovery_error",
+                component=self.name,
+                error=str(error),
+                plugin_source="entry_point",
+            )
+        return loaded
+
+    async def _load_single_plugin_from_entry_point(
+        self, entry_point: t.Any
+    ) -> int:
+        """Load a single plugin from entry point."""
+        # Load the plugin class from entry point
+        plugin = entry_point.load()
+        # Verify it's a Plugin subclass
+        if not (isinstance(plugin, type) and issubclass(plugin, Plugin)):
+            self.audit.record_event(
+                "plugin_load_error",
+                component=self.name,
+                plugin_name=entry_point.name,
+                error="Entry point does not refer to a Plugin subclass",
+                plugin_source="entry_point",
+            )
+            return 0
+
+        # Instantiate the plugin (entry point plugins handle their own initialization)
+        _plugin = plugin()
+        # Validate the _plugin
+        if await self._validate_plugin(_plugin):
+            self._plugins[_plugin.name] = _plugin
+            self.audit.record_event(
+                "plugin_loaded",
+                component=self.name,
+                plugin_name=_plugin.name,
+                plugin_id=_plugin.id,
+                plugin_version=_plugin.version,
+                plugin_source="entry_point",
+                entry_point=str(entry_point),
+            )
+            return 1
+        return 0
+
+    def _find_plugin_classes(self, module: t.Any) -> list[type[Plugin]]:
+        """Find Plugin classes in a module."""
+        plugins: list[type[Plugin]] = []
+        for attrs in dir(module):
+            if attrs.startswith("_"):
+                continue
+            attr = getattr(module, attrs)
+            # Check if it's a class that inherits from Plugin
+            if (
+                isinstance(attr, type)
+                and issubclass(attr, Plugin)
+                and attr is not Plugin
+            ):
+                plugins.append(attr)
         return plugins
 
-    def discover_plugins_from_entrypoints(
-        self,
-        plugins: dict[str, list[Plugin, str]],
-    ) -> None:
-        """Discover installed plugins.
-
-        This method scans for plugins registered via entry points or
-        other sources, adding them to the plugin manager. It ensures
-        that installed plugins are properly registered and can be
-        loaded dynamically.
-
-        :param discovered: A dictionary of already discovered plugins
-            to avoid duplicates.
-        """
-        self._app.logger.debug("Discovering plugins from entry points...")
+    def _check_memory_usage(self) -> dict[str, t.Any]:
+        """Check current memory usage."""
         try:
-            for entry in pkg_resources.iter_entry_points("lauren.plugins"):
-                try:
-                    attribute = entry.load()
-                    if (
-                        isinstance(attribute, type)
-                        and issubclass(attribute, Plugin)
-                        and attribute is not Plugin
-                    ):
-
-                        def _create_plugin(cls=attribute):
-                            return cls()
-
-                        self._lazy[attribute.__name__] = _create_plugin
-                        plugin = _create_plugin()
-                        if plugin.name not in plugins:
-                            plugins[plugin.name] = [plugin, "entry_point"]
-                            self._class[plugin.name] = attribute.__name__
-                            self._metadata[plugin.name] = {
-                                "module": attribute.__module__,
-                                "class": attribute.__name__,
-                                "version": getattr(plugin, "version", "0.0.0"),
-                                "builtin": False,
-                                "source": "entry_point",
-                                "entry_point": entry.name,
-                            }
-                            self._installed.add(plugin.name)
-                except Exception as exc:
-                    self._app.logger.error(
-                        "Failed to load plugin from entry point: "
-                        f"{entry.name!r}",
-                        exc_info=exc,
-                    )
-        except ImportError:
-            pass
-
-    def discover_plugins_from_custom_sources(
-        self,
-        plugins: dict[str, list[Plugin, str]],
-    ) -> None:
-        """Discover plugins from custom directories.
-
-        This method looks for plugins in directories specified by
-        environment variables such as `LAUREN_PLUGIN_PATH`. It allows
-        users to add custom plugin directories without modifying the
-        core framework.
-
-        :param plugins: A dictionary of already discovered plugins
-            to avoid duplicates.
-        """
-        paths: list[str] = []
-        self._app.logger.debug("Discovering plugins from directories...")
-        if "LAUREN_PLUGIN_PATH" in os.environ:
-            paths.extend(os.environ["LAUREN_PLUGIN_PATH"].split(os.pathsep))
-        if "LAUREN_PLUGINS_DIR" in os.environ:
-            paths.append(os.environ["LAUREN_PLUGINS_DIR"])
-        for path in paths:
-            if not os.path.isdir(path):
-                continue
-            try:
-                if path not in sys.path:
-                    sys.path.insert(0, path)
-                for item in os.listdir(path):
-                    if item.endswith(".py") and not item.startswith("_"):
-                        name = item[:-3]
-                        try:
-                            module = importlib.import_module(name)
-                            self.discover_plugins_in_module(
-                                module, plugins, source="module"
-                            )
-                        except Exception as exc:
-                            self._app.logger.error(
-                                "Failed to discover plugins from "
-                                f"custom module: {name!r}",
-                                exc_info=exc,
-                            )
-            except Exception as exc:
-                self._app.logger.error(
-                    f"Failed to scan custom plugin directory: {path!r}",
-                    exc_info=exc,
+            # Basic memory check using sys.getsizeof for loaded plugins
+            total_plugin_memory = sum(
+                sys.getsizeof(plugin) for plugin in self._plugins.values()
+            )
+            memory_info = {
+                "total_plugin_memory": total_plugin_memory,
+                "plugin_count": len(self._plugins),
+                "memory_limit": _MAX_PLUGIN_MEMORY,
+                "memory_usage_ratio": total_plugin_memory / _MAX_PLUGIN_MEMORY,
+                "within_limits": total_plugin_memory <= _MAX_PLUGIN_MEMORY,
+            }
+            if not memory_info["within_limits"]:
+                self.audit.record_event(
+                    "plugin_memory_limit_exceeded",
+                    component=self.name,
+                    current_usage=total_plugin_memory,
+                    memory_limit=_MAX_PLUGIN_MEMORY,
+                    plugin_count=len(self._plugins),
                 )
+            return memory_info
+        except Exception as error:
+            self.audit.record_event(
+                "memory_check_error",
+                component=self.name,
+                error=str(error),
+            )
+            return {"error": str(error)}
 
-    def discover_plugins_from_namespace_packages(
-        self,
-        plugins: dict[str, list[Plugin, str]],
-    ) -> None:
-        """Discover plugins from namespace packages.
-
-        This method scans for plugins in namespace packages that follow
-        the convention `lauren_plugins.*`. This allows third-party
-        packages to provide plugins without being part of the core
-        framework.
-
-        :param plugins: A dictionary of already discovered plugins
-            to avoid duplicates.
-        """
-        self._app.logger.debug(
-            "Discovering plugins from namespace packages..."
-        )
+    async def _validate_plugin(self, plugin: Plugin) -> bool:
+        """Validate a plugin instance."""
         try:
-            try:
-                import lauren_plugins  # type: ignore[import]
+            # Use the plugin's own validation
+            return await plugin.validate()
+        except Exception as error:
+            self.audit.record_event(
+                "plugin_validation_error",
+                component=self.name,
+                plugin_name=getattr(plugin, "name", "unknown"),
+                error=str(error),
+            )
+            return False
 
-                for _, name, _ in pkgutil.iter_modules(
-                    lauren_plugins.__path__,
-                    "lauren_plugins.",
-                ):
-                    try:
-                        module = importlib.import_module(name)
-                        self.discover_plugins_in_module(
-                            module, plugins, source="namespace"
-                        )
-                    except Exception as exc:
-                        self._app.logger.error(
-                            "Failed to discover plugins from namespace "
-                            f"package: {name!r}",
-                            exc_info=exc,
-                        )
-            except ImportError:
-                pass
-        except Exception as exc:
-            self._app.logger.error(
-                "Failed to discover namespace packages",
-                exc_info=exc,
+    async def get_plugin(self, name: str) -> Plugin | None:
+        """Get plugin by name.
+
+        :param name: Plugin nameentifier
+        :return: Plugin instance or None
+        """
+        return self._plugins.get(name)
+
+    async def activate_plugin(self, name: str) -> None:
+        """Activate a specific plugin.
+
+        :param name: Plugin to activate
+        """
+        plugin = self._plugins.get(name)
+        if not plugin:
+            raise ValueError(f"Plugin {name!r} not found")
+        await plugin.activate()
+        self._active_plugins.add(name)
+
+    async def deactivate_plugin(self, name: str) -> None:
+        """Deactivate a specific plugin.
+
+        :param name: Plugin to deactivate
+        """
+        plugin = self._plugins.get(name)
+        if not plugin:
+            raise ValueError(f"Plugin {name!r} not found")
+
+        await plugin.deactivate()
+        self._active_plugins.discard(name)
+
+    async def execute_plugin(
+        self,
+        name: str,
+        data: t.Any,
+        *,
+        context: dict[str, t.Any] | None = None,
+    ) -> t.Any:
+        """Execute a specific plugin.
+
+        :param name: Plugin to execute
+        :param data: Data to process
+        :param context: Optional execution context
+        :return: Processed output
+        """
+        plugin = self._plugins.get(name)
+        if not plugin:
+            raise ValueError(f"Plugin {name!r} not found")
+        if name not in self._active_plugins:
+            raise ValueError(f"Plugin {name!r} is not active")
+        return await plugin.execute(data, context=context)
+
+    async def register_plugin(
+        self, plugin: Plugin, source: str = "manual"
+    ) -> None:
+        """Register a plugin manually.
+
+        :param plugin: Plugin instance to register
+        :param source: Source description for auditing
+        """
+        if not isinstance(plugin, Plugin):
+            raise TypeError(
+                f"Expected Plugin instance, got {type(plugin).__name__}"
             )
 
-    def discover_plugins_in_module(
-        self,
-        module: t.Any,
-        plugins: dict[str, list[Plugin, str]],
-        source: str = "unknown",
-    ) -> None:
-        """Discover plugins within a specific module.
+        if not await self._validate_plugin(plugin):
+            raise ValueError(f"Plugin {plugin.name} validation failed")
 
-        This helper method scans a module for plugin classes and adds
-        them to the discovered plugins dictionary.
+        self._plugins[plugin.name] = plugin
 
-        :param module: The module to scan for plugin classes.
-        :param discovered: A dictionary of already discovered plugins.
-        :param source: The source of the discovery for metadata.
-        """
-        for name in dir(module):
-            attribute = getattr(module, name)
-            if (
-                isinstance(attribute, type)
-                and issubclass(attribute, Plugin)
-                and attribute is not Plugin
-            ):
-
-                def _create_plugin(cls=attribute):
-                    return cls()
-
-                self._lazy[attribute.__name__] = _create_plugin
-                plugin = _create_plugin()
-                if plugin.name not in plugins:
-                    plugins[plugin.name] = [plugin, source]
-                    self._class[plugin.name] = attribute.__name__
-                    self._metadata[plugin.name] = {
-                        "module": module.__name__,
-                        "class": attribute.__name__,
-                        "version": getattr(plugin, "version", "0.0.0"),
-                        "builtin": False,
-                        "source": source,
-                    }
-                    self._installed.add(plugin.name)
-
-    def discover_plugins_from_lauren(
-        self,
-        module: t.Any,
-        plugins: dict[str, list[Plugin, str]],
-    ) -> None:
-        """Discover built-in plugins.
-
-        This helper method scans a module for built-in plugin classes and
-        adds them to the discovered plugins dictionary.
-
-        :param module: The module to scan for plugin classes.
-        :param plugins: A dictionary of already discovered plugins.
-        """
-        for name in dir(module):
-            attribute = getattr(module, name)
-            if (
-                isinstance(attribute, type)
-                and issubclass(attribute, Plugin)
-                and attribute is not Plugin
-            ):
-
-                def _create_plugin(cls=attribute):
-                    return cls()
-
-                self._lazy[attribute.__name__] = _create_plugin
-                plugin = _create_plugin()
-                plugins[plugin.name] = [plugin, "built-in"]
-                self._class[plugin.name] = attribute.__name__
-                self._metadata[plugin.name] = {
-                    "module": module.__name__,
-                    "class": attribute.__name__,
-                    "version": getattr(plugin, "version", "0.0.0"),
-                    "builtin": True,
-                    "source": "built-in",
-                }
-                self._builtins.add(plugin.name)
-
-    def load(self, name: str | None = None, lazy: bool = True) -> None:
-        """Load discovered plugins.
-
-        This method loads plugins either by name or all discovered by
-        the plugin manager. If `lazy` is `True`, it will load plugins
-        on-demand, allowing for efficient resource utilisation. If `lazy`
-        is `False`, it will load all discovered plugins immediately.
-
-        :param name: The name of the plugin to load. If `None`, all
-            discovered plugins will be loaded.
-        :param lazy: Whether to load plugins lazily or immediately,
-            defaults to `True`.
-        """
-        if name:
-            self.load_plugin(name, lazy)
-        else:
-            self.load_plugins(lazy)
-
-    def load_plugin(self, name: str, lazy: bool = True) -> None:
-        """Load a specific plugin.
-
-        This method loads a plugin by its name, applying all registered
-        security validators to ensure the plugin is safe to load. If the
-        plugin passes validation, it is added to the plugin manager and
-        observers are notified of the loading event. If the plugin fails
-        validation, it raises a `ValueError`.
-
-        :param name: The name of the plugin to load.
-        :param lazy: Whether to load the plugin lazily or immediately,
-            defaults to `True`.
-        :raises ValueError: If the plugin is already loaded or fails
-            security validation.
-        """
-        if name in self._plugins:
-            return
-        class_name = self._class.get(name, name)
-        if lazy and class_name in self._lazy:
-            plugin = self._lazy[class_name]()
-        elif not self._discovered:
-            discovered = self.discover_plugins()
-            if name not in discovered:
-                raise ValueError(f"Plugin: {name!r} not found")
-            plugin = discovered[name]
-        elif class_name in self._lazy:
-            plugin = self._lazy[class_name]()
-        else:
-            raise ValueError(f"Plugin: {name!r} not found")
-        if not self.validate(plugin):
-            raise ValueError(f"Plugin: {name!r} failed security validation")
-        self._plugins[name] = plugin
-        self.notify_observers(name, plugin)
-        if hasattr(plugin, "on_load"):
-            plugin.on_load(self._app.context.context)
-        self._app.logger.debug(
-            f"Successfully loaded plugin: {name}",
-            extra={"plugin.name": name, "plugin.lazy": lazy},
+        self.audit.record_event(
+            "plugin_registered",
+            component=self.name,
+            plugin_name=plugin.name,
+            plugin_id=plugin.id,
+            plugin_version=plugin.version,
+            plugin_source=source,
         )
 
-    def load_plugins(self, lazy: bool = True) -> None:
-        """Load all discovered plugins.
+    def get_memory_stats(self) -> dict[str, t.Any]:
+        """Get current plugin system memory statistics.
 
-        This method loads all plugins discovered by the plugin manager,
-        applying all registered security validators to ensure each
-        plugin is safe to load. It logs the loading process and notifies
-        observers of the loading events. If `lazy` is `True`, it will
-        load plugins on-demand, allowing for efficient resource
-        utilisation. If `lazy` is `False`, it will load all discovered
-        plugins immediately.
-
-        :param lazy: Whether to load plugins lazily or immediately,
-            defaults to `True`.
-        :raises RuntimeError: If the core application is not
-            initialised.
+        :return: Dictionary containing memory usage information
         """
-        with self._app.tracer.start_as_current_span("core.load_plugins") as sp:
-            self._app.logger.debug("Starting plugin discovery and loading...")
-            sp.set_attribute("lauren.plugins.lazy", lazy)
-            loaded = failed = 0
-            if lazy:
-                self.discover_plugins()
-                stats = self.statistics
-                sp.set_attribute(
-                    "lauren.plugins.discovered", stats["plugins_discovered"]
-                )
-                self._app.logger.debug(
-                    "Plugins will be loaded lazily. "
-                    f"Available {stats['plugins_discovered']} plugins "
-                    f"for on-demand loading ({stats['builtin_discovered']} "
-                    f"built-ins and {stats['installed_discovered']} installed)"
-                )
-            else:
-                discovered = self.discover_plugins()
-                for name, (plugin, _) in discovered.items():
-                    try:
-                        if self.validate(plugin):
-                            self._plugins[name] = plugin
-                            self.notify_observers(name, plugin)
-                            if hasattr(plugin, "on_load"):
-                                plugin.on_load(self._app.context.context)
-                            self._app.logger.debug(
-                                f"Successfully loaded plugin: {name!r}"
-                            )
-                            loaded += 1
-                        else:
-                            self._app.logger.warning(
-                                f"Plugin: {name!r} failed security validation"
-                            )
-                            failed += 1
-                    except Exception as exc:
-                        self._app.logger.error(
-                            f"Failed to load plugin {name!r}",
-                            exc_info=exc,
-                        )
-                        failed += 1
-                sp.set_attribute("lauren.plugins.loaded", loaded)
-                sp.set_attribute("lauren.plugins.failed", failed)
-                stats = self.statistics
-                self._app.logger.debug(
-                    "Plugin loading complete. "
-                    f"{stats['plugins_loaded']} plugins active "
-                    f"({stats['builtin_loaded']} built-ins and "
-                    f"{stats['installed_loaded']} installed), "
-                    f"{failed} failed to load"
-                )
+        return self._check_memory_usage()
 
-    def register_plugin(
-        self,
-        attribute: type[Plugin],
-        source: str = "dynamic",
-    ) -> None:
-        """Register a plugin class dynamically.
+    def list_plugins(self) -> dict[str, dict[str, t.Any]]:
+        """List all available plugins with their metadata.
 
-        This method allows plugins to be registered at runtime without
-        requiring them to be in the lauren.plugins package or registered
-        via entry points.
-
-        :param attribute: The plugin class to register.
-        :param source: The source of the plugin registration, defaults
-            to `dynamic`. This can be used for logging or auditing
-            purposes.
-        :raises TypeError: If the attribute is not a subclass of
-            `Plugin`.
+        :return: Dictionary mapping plugin names to metadata
         """
-        if not (
-            isinstance(attribute, type)
-            and issubclass(attribute, Plugin)
-            and attribute is not Plugin
-        ):
-            raise TypeError("attribute must be a subclass of Plugin")
-
-        def _create_plugin(cls=attribute):
-            return cls()
-
-        self._lazy[attribute.__name__] = _create_plugin
-        plugin = _create_plugin()
-        self._class[plugin.name] = attribute.__name__
-        self._metadata[plugin.name] = {
-            "module": attribute.__module__,
-            "class": attribute.__name__,
-            "version": getattr(plugin, "version", "0.0.0"),
-            "builtin": False,
-            "source": source,
-        }
-        self._installed.add(plugin.name)
-        self._app.logger.debug(
-            f"Registered new plugin: {plugin.name!r} from source: {source}"
-        )
-
-    def get(self, name: str) -> Plugin:
-        """Get a plugin, loading it lazily if necessary.
-
-        This method retrieves a plugin by its name, loading it lazily if
-        it has not been loaded yet.
-
-        :param name: The name of the plugin to retrieve.
-        :return: The plugin instance.
-        :raises ValueError: If the plugin is not found or fails to load.
-        """
-        if name in self._plugins:
-            return self._plugins[name]
-        class_name = self._class.get(name, name)
-        if class_name in self._lazy:
-            self.load_plugin(name, lazy=True)
-            return self._plugins[name]
-        if not self._discovered:
-            self.discover_plugins()
-            class_name = self._class.get(name, name)
-            if class_name in self._lazy:
-                self.load_plugin(name, lazy=True)
-                return self._plugins[name]
-        raise ValueError(f"Plugin: {name!r} not found or failed to load")
-
-    def unload(self, name: str) -> None:
-        """Unload a specific plugin with cleanup.
-
-        This method unloads a plugin by its name, removing it from the
-        plugin manager and performing any necessary cleanup.
-
-        :param name: The name of the plugin to unload.
-        :raises ValueError: If the plugin is not loaded.
-        """
-        if name not in self._plugins:
-            raise ValueError(f"Plugin: {name!r} is not loaded")
-        plugin = self._plugins[name]
-        if hasattr(plugin, "on_unload"):
-            plugin.on_unload()
-        del self._plugins[name]
-        self._app.logger.debug(f"Successfully unloaded plugin: {name!r}")
-
-    def reload(self, name: str) -> None:
-        """Reload a specific plugin with hot-reload support.
-
-        This method unloads and then reloads a plugin by its name,
-        allowing for hot-reloading of plugin code without restarting the
-        application.
-
-        :param name: The name of the plugin to reload.
-        """
-        if name in self._plugins:
-            self.unload(name)
-        self.load(name, lazy=False)
-
-    def show(self) -> dict[str, Plugin]:
-        """Show all loaded plugins."""
-        return self._plugins.copy()
-
-    @property
-    def builtins(self) -> dict[str, Plugin]:
-        """Show only builtin plugins."""
         return {
-            name: plugin
+            name: {
+                "id": plugin.id,
+                "version": plugin.version,
+                "description": plugin.description,
+                "type": plugin.type,
+                "active": name in self._active_plugins,
+                "executions": plugin._execution_count,
+            }
             for name, plugin in self._plugins.items()
-            if name in self._builtins
         }
 
-    @property
-    def installed(self) -> dict[str, Plugin]:
-        """Show only installed plugins."""
-        return {
-            name: plugin
-            for name, plugin in self._plugins.items()
-            if name in self._installed
-        }
-
-    @property
-    def available(self) -> dict[str, dict[str, t.Any]]:
-        """Show all available plugins with metadata."""
-        if not self._discovered:
-            self.discover_plugins()
-        return self._metadata.copy()
-
-    @property
-    def metrics(self) -> dict[str, t.Any]:
-        """Get plugin manager metrics."""
-        if not self._discovered:
-            self.discover_plugins()
-        return {
-            "loaded": len(self._plugins),
-            "available": len(self._lazy),
-            "builtin": len(self._builtins),
-            "installed": len(self._installed),
-            "validators": len(self._validators),
-            "observers": len(self._observers),
-        }
-
-    @property
-    def statistics(self) -> dict[str, int]:
-        """Get statistics about plugin state.
-
-        This method provides detailed statistics about all plugins in
-        the system, including discovered, loaded, built-in, and
-        dynamically registered plugins.
-
-        :return: A dictionary containing plugin statistics.
-        """
-        builtins = 0
-        installed = 0
-        for plugin in self._plugins:
-            if plugin in self._builtins:
-                builtins += 1
-            else:
-                installed += 1
-        return {
-            "plugins_discovered": len(self._lazy) + len(self._plugins),
-            "plugins_loaded": len(self._plugins),
-            "builtin_discovered": len(self._builtins),
-            "installed_discovered": len(self._installed),
-            "builtin_loaded": builtins,
-            "installed_loaded": installed,
-            "lazily_available": len(self._lazy),
-        }
+    async def cleanup(self) -> None:
+        """Clean up plugin system."""
+        # Deactivate all active plugins
+        for plugin in list(self._active_plugins):
+            try:
+                await self.deactivate_plugin(plugin)
+            except Exception as error:
+                self.audit.record_event(
+                    "plugin_cleanup_error",
+                    component=self.name,
+                    name=plugin,
+                    error=str(error),
+                )
+        # Clean up plugin instances
+        for plugin in self._plugins.values():
+            try:
+                await plugin.cleanup()
+            except Exception as error:
+                self.audit.record_event(
+                    "plugin_cleanup_error",
+                    component=self.name,
+                    name=plugin.name,
+                    error=str(error),
+                )
+        await super().cleanup()

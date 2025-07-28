@@ -83,3 +83,19 @@ class ValidationError(LaurenException):
         else:
             self.message = message
         self.attribute = attribute
+
+
+class ValidationError(LaurenException):
+    """Validation operation failed."""
+
+
+class PolicyViolationError(LaurenException):
+    """Security policy violation detected."""
+
+
+class InspectionError(LaurenException):
+    """Inspection operation failed."""
+
+
+class ComponentError(LaurenException):
+    """Component operation failed."""
