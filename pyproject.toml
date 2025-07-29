@@ -22,18 +22,34 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "pydantic",
-    "openai",
-    "chromadb",
-    "faiss-cpu",
-    "numpy",
-    "fastapi",
-    "uvicorn[standard]",
-    "python-multipart",
-    "google-search-results",
-    "opentelemetry-api",
-    "opentelemetry-sdk",
-    "opentelemetry-exporter-otlp-proto-grpc",
+  "chromadb",
+  "faiss-cpu",
+  "fastapi",
+  "google-search-results",
+  "numpy",
+  "openai",
+  "opentelemetry-api",
+  "opentelemetry-exporter-otlp-proto-grpc",
+  "opentelemetry-sdk",
+  "pydantic",
+  "python-multipart",
+  "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+test = [
+  "coverage[toml]>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-cov>=4.0.0",
+  "pytest-html>=3.1.0",
+  "pytest>=7.0.0",
+]
+dev = [
+  "black>=23.0.0",
+  "flake8>=6.0.0",
+  "isort>=5.12.0",
+  "mypy>=1.0.0",
+  "tox>=4.0.0",
 ]
 
 [project.scripts]
