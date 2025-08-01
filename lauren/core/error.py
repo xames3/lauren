@@ -3,8 +3,8 @@ Error and warning objects
 =========================
 
 Author: Akshay Mestry <xa@mes3.dev>
-Created on: Monday, July 29 2025
-Last updated on: Monday, July 29 2025
+Created on: Monday, July 28 2025
+Last updated on: Wednesday, July 30 2025
 
 This module provides various error and warning utilities that are used
 throughout the framework.
@@ -16,6 +16,7 @@ __all__: tuple[str, ...] = (
     "ApplicationError",
     "BaseError",
     "ComponentError",
+    "ConfigValidationError",
     "ContextError",
     "GuardrailError",
     "InspectionError",
@@ -66,3 +67,7 @@ class ValidationError(SecurityError):
 
 class GuardrailError(SecurityError):
     """Errors related to guardrail check failure."""
+
+
+class ConfigValidationError(ValidationError):
+    """Errors related to configuration validation failure."""
