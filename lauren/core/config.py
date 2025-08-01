@@ -4,7 +4,7 @@ Configuration objects
 
 Author: Akshay Mestry <xa@mes3.dev>
 Created on: Monday, July 29 2025
-Last updated on: Wednesday, July 30 2025
+Last updated on: Friday, August 01 2025
 
 This module provides various configurations that are used throughout the
 framework. These configurations are implemented with hierarchical,
@@ -19,15 +19,25 @@ import typing as t
 from weakref import WeakKeyDictionary as WKDictionary
 
 from lauren.core.error import ConfigValidationError
-from lauren.utils.misc import mkdir
+from lauren.utils.filesystem import mkdir
 
-_ALLOWED_LOG_LEVELS: tuple[str] = (
+if t.TYPE_CHECKING:
+    from collections.abc import Iterable
+
+_T = t.TypeVar("_T")
+
+_ALLOWED_LOG_LEVELS: tuple[str, ...] = (
     "DEBUG",
     "INFO",
     "WARNING",
     "ERROR",
     "CRITICAL",
 )
+# NOTE(xames3): The default log format uses the special `qualName`
+# attribute to include the fully qualified name of the logger, which
+# provides more context in the log messages. This is an implementation
+# detail that allows for more informative logging without changing the
+# logger's name which is provided as part of this framework.
 _DEFAULT_LOG_FMT: t.Final[str] = (
     "%(asctime)s %(levelname)s %(qualName)s:%(lineno)d "
     "%(extra)s: %(message)s"
@@ -35,7 +45,7 @@ _DEFAULT_LOG_FMT: t.Final[str] = (
 _DEFAULT_LOG_DATEFMT: t.Final[str] = "%Y-%m-%dT%H:%M:%SZ"
 
 
-class config_property:
+class config_property(t.Generic[_T]):
     """Descriptor for configuration properties.
 
     This descriptor class creates and provides functionalities like
@@ -64,12 +74,12 @@ class config_property:
 
     def __init__(
         self,
-        default: t.Any = None,
+        default: _T,
         *,
         frozen: bool = False,
         description: str | None = None,
-        allowed: set[t.Any] | None = None,
-        check: t.Callable[[t.Any], bool] | None = None,
+        allowed: Iterable[_T] | None = None,
+        check: t.Callable[[_T], bool] | None = None,
         between: tuple[int | float, ...] | None = None,
     ) -> None:
         """Initialise configuration property."""
@@ -79,7 +89,7 @@ class config_property:
         self.allowed = allowed
         self.check = check
         self.between = between
-        self.property: str | None = None
+        self.property: str = ""
         self.validate: bool = any([self.between, self.check, self.allowed])
         self.locks: dict[int, threading.RLock] = {}
 
@@ -104,7 +114,16 @@ class config_property:
                 ) from error
         setattr(instance, self.property, self.default)
 
-    def __get__(self, instance: t.Any, owner: type) -> t.Any:
+    @t.overload
+    def __get__(self, instance: None, owner: type) -> config_property[_T]: ...
+    @t.overload
+    def __get__(self, instance: object, owner: type) -> _T: ...
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type,
+    ) -> config_property[_T] | _T:
         """Get and return the property value from the instance.
 
         This method retrieves the value of the property from the
@@ -120,7 +139,7 @@ class config_property:
             return self
         return getattr(instance, self.property, self.default)
 
-    def __set__(self, instance: type, value: t.Any) -> None:
+    def __set__(self, instance: object, value: _T) -> None:
         """Set the property with validation & immutability checks.
 
         This method sets the value of the property on the instance. It
@@ -158,7 +177,7 @@ class config_property:
         if self.allowed is not None and value not in self.allowed:
             raise ConfigValidationError(
                 f"{value!r} is not one of the allowed values "
-                f"({', '.join(repr(item) for item in self.allowed)})"
+                f"({', '.join(str(item) for item in self.allowed)})"
             )
         if self.check is not None:
             try:
@@ -182,7 +201,7 @@ class config_property:
                     f"{value} is not between {minimum} and {maximum}"
                 )
 
-    def _acquire_lock(self, instance: type) -> threading.RLock:
+    def _acquire_lock(self, instance: object) -> threading.RLock:
         """Acquire a lock for thread-safe access.
 
         This method ensures that the property is accessed in a
@@ -238,15 +257,24 @@ class FileLoggerConfig:
     required.
     """
 
-    enable: bool = config_property(True, allowed=[True, False])
-    level: str = config_property("INFO", allowed=_ALLOWED_LOG_LEVELS)
-    fmt: str = config_property(_DEFAULT_LOG_FMT)
-    datefmt: str = config_property(_DEFAULT_LOG_DATEFMT)
-    path: str = config_property("logs", check=lambda x: mkdir(x))
-    file: str = config_property("lauren.log")
-    encoding: str = config_property("utf-8", frozen=True)
-    max_bytes: int = config_property(10485760)
-    backups: int = config_property(5, check=lambda x: x >= 0)
+    enable: config_property[bool] = config_property(
+        True,
+        allowed=[True, False],
+    )
+    level: config_property[str] = config_property(
+        "INFO",
+        allowed=_ALLOWED_LOG_LEVELS,
+    )
+    fmt: config_property[str] = config_property(_DEFAULT_LOG_FMT)
+    datefmt: config_property[str] = config_property(_DEFAULT_LOG_DATEFMT)
+    path: config_property[str] = config_property(
+        "logs",
+        check=lambda x: bool(mkdir(x)),
+    )
+    output: config_property[str] = config_property("lauren.log")
+    encoding: config_property[str] = config_property("utf-8", frozen=True)
+    max_bytes: config_property[int] = config_property(10485760)
+    backups: config_property[int] = config_property(5, check=lambda x: x >= 0)
 
 
 class ConsoleLoggerConfig:
@@ -257,11 +285,20 @@ class ConsoleLoggerConfig:
     environments where real-time log output is required.
     """
 
-    enable: bool = config_property(True, allowed=[True, False])
-    level: str = config_property("DEBUG", allowed=_ALLOWED_LOG_LEVELS)
-    fmt: str = config_property(_DEFAULT_LOG_FMT)
-    datefmt: str = config_property(_DEFAULT_LOG_DATEFMT)
-    colour: bool = config_property(True, allowed=[True, False])
+    enable: config_property[bool] = config_property(
+        True,
+        allowed=[True, False],
+    )
+    level: config_property[str] = config_property(
+        "DEBUG",
+        allowed=_ALLOWED_LOG_LEVELS,
+    )
+    fmt: config_property[str] = config_property(_DEFAULT_LOG_FMT)
+    datefmt: config_property[str] = config_property(_DEFAULT_LOG_DATEFMT)
+    colour: config_property[bool] = config_property(
+        True,
+        allowed=[True, False],
+    )
 
 
 class LoggerConfig:
@@ -272,9 +309,12 @@ class LoggerConfig:
     configuration setup.
     """
 
-    level: str = config_property("DEBUG", allowed=_ALLOWED_LOG_LEVELS)
-    fmt: str = config_property(_DEFAULT_LOG_FMT)
-    datefmt: str = config_property(_DEFAULT_LOG_DATEFMT)
+    level: config_property[str] = config_property(
+        "DEBUG",
+        allowed=_ALLOWED_LOG_LEVELS,
+    )
+    fmt: config_property[str] = config_property(_DEFAULT_LOG_FMT)
+    datefmt: config_property[str] = config_property(_DEFAULT_LOG_DATEFMT)
     file: FileLoggerConfig = FileLoggerConfig()
     tty: ConsoleLoggerConfig = ConsoleLoggerConfig()
 
@@ -287,6 +327,6 @@ class Config:
     as logging, application settings, and other framework-wide settings.
     """
 
-    name: str = config_property("lauren.core", frozen=True)
-    version: str = config_property("31.7.2025", frozen=True)
+    name: config_property[str] = config_property("lauren.core", frozen=True)
+    version: config_property[str] = config_property("30.8.2025", frozen=True)
     logger: LoggerConfig = LoggerConfig()
