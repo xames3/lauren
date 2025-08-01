@@ -147,7 +147,6 @@ docs/
 data/
 assets/
 logs/
-tests/
 *.log
 *.tmp
 *.temp
