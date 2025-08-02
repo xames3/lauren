@@ -3,7 +3,7 @@
 # 
 # Author: Akshay Mestry <xa@mes3.dev>
 # Created on: Wednesday, July 30 2025
-# Last updated on: Thursday, July 31 2025
+# Last updated on: Saturday, August 02 2025
 # 
 # This Makefile provides a comprehensive set of commands (targets) for managing
 # the development workflow, including cleaning, testing, linting, formatting,
@@ -82,7 +82,8 @@ clean: ## Remove build artifacts, cache files, and temporary directories
 
 install: ## Install package in editable (development) mode
 	$(call animate,Installing $(COLOUR_BOLD)$(PROJECT_NAME)$(COLOUR_RESET) in editable mode, \
-		$(PIP) install --editable . --quiet, \
+		$(PIP) install --editable .[test] --quiet --force-reinstall && \
+		$(PIP) install --editable .[dev] --quiet --force-reinstall, \
 		0.3 \
 	)
 
@@ -93,7 +94,7 @@ test: ## Execute test suite with coverage reporting
 	)
 
 tox: ## Execute tests across multiple Python environments using tox
-	$(call animate,Running tests across different virtual environments (with $(COLOUR_MAGENTA)coverage$(COLOUR_RESET)), \
+	$(call animate,Running tests across different virtual environments (with $(COLOUR_MAGENTA)coverage$(COLOUR_RESET) enabled), \
 		tox -p -qq, \
 		0.3 \
 	)
@@ -102,24 +103,21 @@ coverage: ## Generate comprehensive test coverage reports in multiple formats
 		COLUMNS=$(TERMINAL_WIDTH) tox -qq -e coverage, \
 		0.3 \
 	)
-format: ## Apply automatic code formatting using black and isort
-	$(call animate,Formatting code with black and isort, \
-		black $(PROJECT_NAME) $(TEST_DIR) --color --line-length 80 --quiet && \
-		isort $(PROJECT_NAME) $(TEST_DIR) --sl --color --quiet, \
+format: ## Apply automatic code formatting using ruff
+	$(call animate,Formatting code with $(COLOUR_RED)ruff$(COLOUR_RESET), \
+		ruff format $(PROJECT_NAME) $(TEST_DIR), \
 		0.3 \
 	)
 
 lint: ## Perform comprehensive linting checks and report issues
-	$(call animate,Running linting checks, \
-		ruff check $(PROJECT_NAME) $(TEST_DIR) --output-format=full --quiet && \
-		black --check $(PROJECT_NAME) $(TEST_DIR) --color --quiet && \
-		isort --check-only $(PROJECT_NAME) $(TEST_DIR) --color --quiet, \
+	$(call animate,Running linting checks with $(COLOUR_RED)ruff$(COLOUR_RESET), \
+		ruff check $(PROJECT_NAME) $(TEST_DIR) --output-format=full --quiet, \
 		0.3 \
 	)
 
 typecheck: ## Perform static type checking with mypy
-	$(call animate,Static type analysis, \
-		mypy $(PROJECT_NAME) --config-file pyproject.toml --color-output, \
+	$(call animate,Performing static type analysis using with $(COLOUR_GREEN)mypy$(COLOUR_RESET), \
+		mypy $(PROJECT_NAME) --config-file pyproject.toml --color-output --show-error-codes, \
 		0.3 \
 	)
 

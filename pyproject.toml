@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lauren"
 dynamic = [ "version" ]
-description = "Large AI Utility for Retrieval and Embedding with Neural Networks"
+description = "Large AI Utility for Research and Engineering Needs"
 readme = "README.rst"
 requires-python = ">=3.12"
 license = "MIT"
@@ -58,27 +58,19 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "coverage[toml]>=7.0.0",
-  "pytest>=8.0.0",
+  "hypothesis>=6.70.0",
   "pytest-asyncio>=0.21.0",
   "pytest-benchmark>=5.1.0",
   "pytest-cov>=4.0.0",
   "pytest-html>=4.0.0",
   "pytest-mock>=3.10.0",
   "pytest-xdist>=3.0.0",
-  "hypothesis>=6.70.0",
+  "pytest>=8.0.0",
 ]
 dev = [
-  "black>=24.0.0",
-  "flake8>=7.0.0",
-  "flake8-bugbear>=24.0.0",
-  "flake8-comprehensions>=3.14.0",
-  "flake8-docstrings>=1.7.0",
-  "flake8-pyproject>=1.2.0",
-  "flake8-simplify>=0.21.0",
-  "isort>=5.13.0",
   "mypy>=1.8.0",
   "pre-commit>=3.5.0",
-  "ruff>=0.3.0",
+  "ruff>=0.12.7",
   "tox>=4.11.0",
 ]
 
@@ -98,30 +90,191 @@ Issues = "https://github.com/xames3/lauren/issues"
 packages = [ "lauren" ]
 
 [tool.setuptools.dynamic]
-version = { attr = "lauren.version" }
+version = { attr = "lauren.__version__" }
 
-[tool.black]
+[tool.ruff]
 line-length = 80
-target-version = [ "py312", "py313" ]
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
+target-version = "py312"
+fix = true
+unsafe-fixes = false
+respect-gitignore = true
+extend-exclude = [
+  ".eggs",
+  ".git",
+  ".hg",
+  ".mypy_cache",
+  ".tox",
+  ".venv",
+  "__pycache__",
+  "archive",
+  "build",
+  "dist",
+]
 
-[tool.isort]
-profile = "black"
-line_length = 80
-force_single_line = true
-force_sort_within_sections = false
+[tool.ruff.lint]
+select = [
+  "A",        # flake8-builtins
+  "ANN",      # flake8-annotations
+  "ARG",      # flake8-unused-arguments
+  "B",        # flake8-bugbear
+  "BLE",      # flake8-blind-except
+  "C4",       # flake8-comprehensions
+  "COM",      # flake8-commas
+  "D",        # pydocstyle
+  "DTZ",      # flake8-datetimez
+  "E",        # pycodestyle errors
+  "EM",       # flake8-errmsg
+  "EXE",      # flake8-executable
+  "F",        # pyflakes
+  "FA",       # flake8-future-annotations
+  "FBT",      # flake8-boolean-trap
+  "FLY",      # flynt
+  "FURB",     # refurb
+  "G",        # flake8-logging-format
+  "I",        # isort
+  "ICN",      # flake8-import-conventions
+  "INP",      # flake8-no-pep420
+  "INT",      # flake8-gettext
+  "ISC",      # flake8-implicit-str-concat
+  "LOG",      # flake8-logging
+  "N",        # pep8-naming
+  "PERF",     # perflint
+  "PIE",      # flake8-pie
+  "PT",       # flake8-pytest-style
+  "PYI",      # flake8-pyi
+  "Q",        # flake8-quotes
+  "RET",      # flake8-return
+  "RSE",      # flake8-raise
+  "RUF",      # ruff-specific rules
+  "S",        # flake8-bandit
+  "SIM",      # flake8-simplify
+  "SLF",      # flake8-self
+  "SLOT",     # flake8-slots
+  "T10",      # flake8-debugger
+  "T20",      # flake8-print
+  "TCH",      # flake8-type-checking
+  "TID",      # flake8-tidy-imports
+  "TRY",      # tryceratops
+  "UP",       # pyupgrade
+  "W",        # pycodestyle warnings
+]
+ignore = [
+  "ANN001",   # Missing type annotation for function argument
+  "ANN003",   # Missing type annotation for `**kwargs`
+  "ANN201",   # Missing return type annotation for public function
+  "ANN202",   # Missing return type annotation for private function
+  "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+  "BLE001",   # Do not catch blind exception
+  "COM812",   # Missing trailing comma (conflicts with formatter)
+  "D100",     # Missing docstring in public module
+  "D101",     # Missing docstring in public class
+  "D102",     # Missing docstring in public method
+  "D103",     # Missing docstring in public function
+  "D104",     # Missing docstring in public package
+  "D107",     # Missing docstring in `__init__`
+  "D205",     # 1 blank line required between summary line and description
+  "D415",     # First line should end with a period, question mark, or exclamation point
+  "EM101",    # Exception must not use a string literal
+  "EM102",    # Exception must not use an f-string literal
+  "F403",     # Name may be undefined
+  "F405",     # Name defined from star imports
+  "FBT003",   # Boolean positional value in function call
+  "ISC001",   # Implicitly concatenated string literals (conflicts with formatter)
+  "N806",     # Variable in function should be lowercase
+  "PLR0913",  # Too many arguments to function call
+  "PLR0917",  # Too many positional arguments
+  "PT006",    # Wrong type passed to first argument of `pytest.mark.parametrize`
+  "PT007",    # Wrong values type in `pytest.mark.parametrize`
+  "S101",     # Use of assert detected
+  "SLF001",   # Private member accessed
+  "T201",     # Print found
+  "TID252",   # Relative imports are not allowed
+  "TRY003",   # Avoid specifying long messages outside the exception class
+  "TRY301",   # Abstract `raise` to an inner function
+]
+unfixable = [
+  "F401",     # Unused imports
+  "F841",     # Unused variables
+]
+extend-per-file-ignores = {}
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = false
+ignore-fully-untyped = false
+mypy-init-return = true
+suppress-dummy-args = true
+suppress-none-returning = true
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Body",
+]
+
+[tool.ruff.lint.flake8-comprehensions]
+allow-dict-calls-with-keyword-arguments = false
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+parametrize-names-type = "tuple"
+parametrize-values-type = "tuple"
+parametrize-values-row-type = "tuple"
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "double"
+multiline-quotes = "double"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+case-sensitive = true
+combine-as-imports = true
+force-single-line = true
+force-sort-within-sections = false
+known-first-party = ["lauren"]
+lines-after-imports = 2
+order-by-type = true
+relative-imports-order = "closest-to-furthest"
+required-imports = ["from __future__ import annotations"]
+single-line-exclusions = ["typing", "collections.abc"]
+split-on-trailing-comma = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pep8-naming]
+classmethod-decorators = [
+  "classmethod",
+]
+staticmethod-decorators = [
+  "staticmethod",
+]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 80
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pylint]
+allow-magic-value-types = ["int", "str", "bytes"]
+max-args = 8
+max-branches = 15
+max-returns = 8
+max-statements = 60
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 72
+indent-style = "space"
+line-ending = "auto"
+quote-style = "double"
+skip-magic-trailing-comma = false
 
 [tool.mypy]
 files = [ "lauren" ]
@@ -152,6 +305,9 @@ warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
 disable_error_code = [
+  "assignment",
+  "method-assign",
+  "name-defined",
   "operator",
   "override",
   "union-attr",
@@ -265,15 +421,21 @@ commands = [
   [ "pytest", "{posargs}" ]
 ]
 
+[tool.tox.env.lint]
+description = "Run linting with ruff"
+deps = [ "ruff>=0.12.7" ]
+commands = [
+  [ "ruff", "check", "lauren", "tests", "--diff" ],
+]
+
 [tool.tox.env.format]
-description = "Run code formatters (black and isort)"
+description = "Run code formatting with ruff"
 deps = [
-  "black>=24.0.0",
-  "isort>=5.13.0",
+  "ruff>=0.12.7",
 ]
 commands = [
-  [ "isort", "--sl", "lauren" ],
-  [ "black", "-q", "--line-length", "80", "lauren", "tests" ],
+  [ "ruff", "format", "lauren", "tests", "--diff" ],
+  [ "ruff", "check", "lauren", "tests", "--fix", "--diff" ],
 ]
 
 [tool.tox.env.typecheck]
