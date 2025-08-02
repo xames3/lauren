@@ -151,12 +151,4 @@ logs/
 *.tmp
 *.temp
 *.bak
-lauren/agents/
-lauren/cli/
-lauren/components/
-lauren/evaluator/
-lauren/memory/
-lauren/plugins/
-lauren/prompts/
-lauren/tools/
-lauren/vectors/
+phase.py
