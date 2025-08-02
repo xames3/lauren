@@ -45,7 +45,6 @@ def mixed():
 
 @pytest.fixture
 def factory():
-
     def _create_test_class(name="internal", default=None, **kwargs):
         class TestClass:
             pass
@@ -60,7 +59,6 @@ def factory():
 
 @pytest.mark.unit
 class TestConfigProperty:
-
     @pytest.mark.parametrize(
         "default, frozen, description",
         [
@@ -187,9 +185,9 @@ class TestConfigProperty:
         "allowed, invalid",
         [
             ({True, False}, "invalid"),
-            ({1, "text", True, None}, "invalid"),
+            ({1, "text", None}, "invalid"),
             ({frozenset([1, 2]), (3, 4), "string"}, "invalid"),
-            ({1, 2.5, True, None, "string"}, "invalid"),
+            ({1, 2.5, None, "string"}, "invalid"),
         ],
     )
     def test_error_message(self, allowed, invalid):
@@ -271,14 +269,13 @@ class TestConfigProperty:
         assert len(errors) == 0, f"Errors occurred: {errors}"
         assert len(results) == thread * iterations_per_thread
         for wid, result in results:
-            assert (
-                result in members
-            ), f"Invalid result {result} from worker {wid}"
+            assert result in members, (
+                f"Invalid result {result} from worker {wid}"
+            )
 
 
 @pytest.mark.integration
 class TestFileLoggerConfig:
-
     @pytest.fixture
     def config(self):
         return FileLoggerConfig()
@@ -311,7 +308,6 @@ class TestFileLoggerConfig:
 
 @pytest.mark.integration
 class TestConsoleLoggerConfig:
-
     @pytest.fixture
     def config(self):
         return ConsoleLoggerConfig()
@@ -326,7 +322,6 @@ class TestConsoleLoggerConfig:
 
 @pytest.mark.integration
 class TestLoggerConfig:
-
     @pytest.fixture
     def config(self):
         return LoggerConfig()
@@ -345,14 +340,13 @@ class TestLoggerConfig:
 
 @pytest.mark.integration
 class TestConfig:
-
     @pytest.fixture
     def config(self):
         return Config()
 
     def test_defaults(self, config):
         assert config.name == "lauren.core"
-        assert config.version == "30.8.2025"
+        assert config.version == "31.8.2025"
         assert isinstance(config.logger, LoggerConfig)
 
     @pytest.mark.parametrize(
@@ -374,7 +368,6 @@ class TestConfig:
 
 @pytest.mark.extensive
 class TestExtensiveValidation:
-
     @pytest.fixture
     def file(self):
         return FileLoggerConfig()
@@ -514,9 +507,9 @@ class TestExtensiveValidation:
         app_logger = LoggerConfig()
         app_logger.level = "ERROR"
         plugin_logger = LoggerConfig()
-        assert (
-            plugin_logger.level == "DEBUG"
-        ), f"Expected DEBUG, got {plugin_logger.level}"
+        assert plugin_logger.level == "DEBUG", (
+            f"Expected DEBUG, got {plugin_logger.level}"
+        )
         app_logger.level = "CRITICAL"
         plugin_logger.level = "WARNING"
         assert app_logger.level == "CRITICAL"
